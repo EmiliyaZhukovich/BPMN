@@ -193,3 +193,5 @@ scratch.py
 
 *.ps1
 .claude
+
+.github/workflows/ci.yml

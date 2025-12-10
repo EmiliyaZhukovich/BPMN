@@ -1,12 +1,10 @@
 <template>
-  <div style="display: flex; flex-direction: row; height: 100vh">
-    <div class="chat-container">
-      <ChatInterface
-        @bpmn-xml-received="handleBpmnXml"
-        @bpmn-json-received="setBpmnJson"
-        @download="downloadBpmnFile"
-        :isDownloadReady="!!bpmnXml"
-        :process="process"
+  <div class="home-container">
+    <div class="constructor-container">
+      <ConstructorPanel
+        @bpmn-xml-updated="handleBpmnXml"
+        @export-png="exportPng"
+        @export-svg="exportSvg"
       />
     </div>
     <div
@@ -23,23 +21,20 @@
 
 <script>
 import BpmnModeler from 'bpmn-js/lib/Modeler';
-import ChatInterface from '../components/ChatInterface.vue';
-import { bpmnAssistantUrl, bpmnLayoutServerUrl } from '../config';
-import { getApiKeys } from '../utils/apiKeys';
-// import initialDiagram from "../assets/initialDiagram.js";
+import ConstructorPanel from '../components/ConstructorPanel.vue';
+import { bpmnLayoutServerUrl } from '../config';
 import 'bpmn-js/dist/assets/diagram-js.css';
 import 'bpmn-js/dist/assets/bpmn-js.css';
 import 'bpmn-js/dist/assets/bpmn-font/css/bpmn-embedded.css';
 
 export default {
-  name: 'App',
+  name: 'HomeView',
   components: {
-    ChatInterface,
+    ConstructorPanel,
   },
   data() {
     return {
       bpmnXml: '',
-      process: null, // Process in JSON format
       bpmnViewer: null,
       snackbar: {
         show: false,
@@ -102,63 +97,120 @@ export default {
         }
       }
     },
-    async createBpmnJson() {
+    async exportPng() {
+      if (!this.bpmnViewer || !this.bpmnXml) {
+        this.showSnackbar('Сначала постройте диаграмму', 'error');
+        return;
+      }
       try {
-        const apiKeys = getApiKeys();
-        const response = await fetch(`${bpmnAssistantUrl}/bpmn_to_json`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bpmn_xml: this.bpmnXml, api_keys: apiKeys }),
-        });
+        const { svg } = await this.bpmnViewer.saveSVG();
+        const img = new Image();
+        const svgBlob = new Blob([svg], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(svgBlob);
 
-        if (!response.ok) {
-          throw new Error(`HTTP error! Status: ${response.status}`);
-        }
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          canvas.toBlob((blob) => {
+            const downloadUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = 'diagram.png';
+            a.click();
+            URL.revokeObjectURL(downloadUrl);
+            URL.revokeObjectURL(url);
+          });
+        };
 
-        this.process = await response.json();
-        console.log('BPMN JSON created successfully:', this.process);
-        this.showSnackbar('BPMN successfully uploaded', 'success');
+        img.src = url;
+        this.showSnackbar('PNG exported successfully', 'success');
       } catch (error) {
-        console.error('Error creating BPMN JSON:', error);
-        this.showSnackbar(
-          'There was a problem while loading the BPMN file',
-          'error'
-        );
+        console.error('Error exporting PNG:', error);
+        this.showSnackbar('Error exporting PNG', 'error');
+      }
+    },
+    async exportSvg() {
+      if (!this.bpmnViewer || !this.bpmnXml) {
+        this.showSnackbar('Сначала постройте диаграмму', 'error');
+        return;
+      }
+      try {
+        const { svg } = await this.bpmnViewer.saveSVG();
+        const blob = new Blob([svg], { type: 'image/svg+xml' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'diagram.svg';
+        a.click();
+        window.URL.revokeObjectURL(url);
+        this.showSnackbar('SVG exported successfully', 'success');
+      } catch (error) {
+        console.error('Error exporting SVG:', error);
+        this.showSnackbar('Error exporting SVG', 'error');
       }
     },
     async handleBpmnXml(bpmnXmlValue) {
-      if (bpmnXmlValue === '') {
+      if (!bpmnXmlValue || bpmnXmlValue === '') {
+        // Clear the diagram but keep viewer initialized
         if (this.bpmnViewer) {
-          this.bpmnViewer.destroy();
+          try {
+            // Import empty diagram to clear
+            await this.bpmnViewer.importXML('<?xml version="1.0" encoding="UTF-8"?><definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="definitions_1"><process id="Process_1" isExecutable="false"></process></definitions>');
+          } catch (err) {
+            console.error('Failed to clear diagram:', err);
+          }
         }
+        this.bpmnXml = '';
+        return;
+      }
 
-        this.bpmnViewer = new BpmnModeler({
-          container: '#canvas',
-        });
+      if (!this.bpmnViewer) {
+        console.error('BPMN viewer is not initialized');
         return;
       }
 
       try {
-        // Auto-layout of the BPMN diagram
-        const layoutedXml = await this.processDiagram(bpmnXmlValue);
-        if (!layoutedXml) {
-          throw new Error('Failed to layout the BPMN diagram');
+        console.log('Processing BPMN XML:', bpmnXmlValue.substring(0, 200));
+
+        // Try auto-layout first, but don't fail if it doesn't work
+        let xmlToImport = bpmnXmlValue;
+        try {
+          const layoutedXml = await this.processDiagram(bpmnXmlValue);
+          if (layoutedXml && layoutedXml.trim() !== '') {
+            console.log('Layouted XML received:', layoutedXml.substring(0, 200));
+            xmlToImport = layoutedXml;
+          } else {
+            console.warn('Layout server returned empty result, using original XML');
+          }
+        } catch (layoutError) {
+          console.warn('Layout server error, using original XML:', layoutError);
+          // Continue with original XML
         }
-        this.bpmnXml = layoutedXml;
-        if (this.bpmnViewer) {
-          this.bpmnViewer
-            .importXML(layoutedXml)
-            .then((result) => {
-              const { warnings } = result;
-              console.log('BPMN diagram imported successfully', warnings);
-              this.bpmnViewer.get('canvas').zoom('fit-viewport');
-            })
-            .catch((err) => {
-              console.error('Failed to import BPMN diagram:', err);
-            });
-        }
+
+        this.bpmnXml = xmlToImport;
+
+        // Import the diagram
+        const { warnings } = await this.bpmnViewer.importXML(xmlToImport);
+        console.log('BPMN diagram imported successfully', warnings);
+        this.bpmnViewer.get('canvas').zoom('fit-viewport');
+        this.showSnackbar('Диаграмма построена успешно', 'success');
       } catch (error) {
         console.error('Error handling BPMN XML:', error);
+        this.showSnackbar(`Ошибка при построении диаграммы: ${error.message}`, 'error');
+
+        // Try to import without layout as fallback
+        try {
+          await this.bpmnViewer.importXML(bpmnXmlValue);
+          this.bpmnViewer.get('canvas').zoom('fit-viewport');
+          this.showSnackbar('Диаграмма построена (без авто-разметки)', 'warning');
+          this.bpmnXml = bpmnXmlValue;
+        } catch (fallbackError) {
+          console.error('Fallback import also failed:', fallbackError);
+          this.showSnackbar(`Критическая ошибка: ${fallbackError.message}`, 'error');
+        }
       }
     },
     async processDiagram(bpmnDiagram) {
@@ -184,42 +236,43 @@ export default {
         console.error('Failed to process the diagram:', error);
       }
     },
-    async downloadBpmnFile() {
-      const { xml } = await this.bpmnViewer.saveXML();
-      const blob = new Blob([xml], { type: 'text/xml' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'diagram.bpmn';
-      a.click();
-    },
-    setBpmnJson(value) {
-      this.process = value;
-    },
   },
 };
 </script>
 
-<style>
-#canvas {
-  margin: 10px;
+<style scoped>
+.home-container {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+  overflow: hidden;
 }
 
-.chat-container {
-  flex: 3;
+.constructor-container {
+  flex: 0 0 450px;
+  min-width: 400px;
+  max-width: 600px;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .canvas-container {
-  flex: 4;
-  border: 2px solid gray;
+  flex: 1;
+  height: 100vh;
+  border-left: 1px solid #e0e0e0;
+  background: #fafafa;
+}
+
+#canvas {
+  width: 100%;
+  height: 100%;
 }
 
 @media (min-width: 1800px) {
-  .chat-container {
-    flex: 2;
-  }
-  .canvas-container {
-    flex: 5;
+  .constructor-container {
+    flex: 0 0 500px;
   }
 }
 </style>
