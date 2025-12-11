@@ -322,9 +322,77 @@ export const templates = {
       },
     ],
   },
+
+  withPools: {
+    name: 'Процесс с пулами',
+    description: 'Пример процесса с несколькими пулами и дорожками',
+    diagram: {
+      pools: [
+        {
+          id: 'pool_1',
+          name: 'Компания',
+          isExternal: false,
+          isCollapsed: false,
+          lanes: [
+            {
+              id: 'lane_1',
+              name: 'Отдел продаж',
+              elements: [
+                {
+                  id: 'start_1',
+                  type: 'startEvent',
+                  label: 'Получение заявки',
+                },
+                {
+                  id: 'task_1',
+                  type: 'task',
+                  label: 'Обработка заявки',
+                },
+                {
+                  id: 'end_1',
+                  type: 'endEvent',
+                  label: 'Заявка обработана',
+                },
+              ],
+            },
+            {
+              id: 'lane_2',
+              name: 'Отдел доставки',
+              elements: [
+                {
+                  id: 'task_2',
+                  type: 'task',
+                  label: 'Подготовка к доставке',
+                },
+                {
+                  id: 'task_3',
+                  type: 'task',
+                  label: 'Доставка товара',
+                },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'pool_2',
+          name: 'Клиент',
+          isExternal: true,
+          isCollapsed: false,
+          lanes: [],
+        },
+      ],
+      messageFlows: [],
+      associations: [],
+      artifacts: [],
+    },
+  },
 };
 
 export function getTemplate(name) {
+  // Check if it's a diagram template (with pools) or process template (legacy)
+  if (templates[name] && templates[name].diagram) {
+    return JSON.parse(JSON.stringify(templates[name].diagram));
+  }
   return templates[name] ? JSON.parse(JSON.stringify(templates[name].process)) : null;
 }
 

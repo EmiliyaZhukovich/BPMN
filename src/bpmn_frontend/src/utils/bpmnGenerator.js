@@ -3,6 +3,8 @@
  * Converts hierarchical process structure to BPMN XML format
  */
 
+import { migrateToDiagramModel, createEmptyDiagram, createPool } from './diagramModel.js';
+
 let elementIdCounter = 1;
 let flowIdCounter = 1;
 
@@ -16,10 +18,23 @@ function generateFlowId(source, target) {
 
 /**
  * Transform hierarchical process structure to BPMN XML
- * @param {Array} process - Array of process elements
+ * @param {Object|Array} diagramOrProcess - Diagram with pools/lanes OR flat array of process elements (legacy)
  * @returns {string} BPMN XML string
  */
-export function generateBpmnXml(process) {
+export function generateBpmnXml(diagramOrProcess) {
+  // Check if it's old format (array) or new format (diagram with pools)
+  let diagram;
+  if (Array.isArray(diagramOrProcess)) {
+    // Legacy format - migrate to diagram
+    diagram = migrateToDiagramModel(diagramOrProcess);
+  } else if (diagramOrProcess && diagramOrProcess.pools) {
+    // New format
+    diagram = diagramOrProcess;
+  } else {
+    // Empty or invalid - create empty diagram
+    diagram = createEmptyDiagram();
+    diagram.pools.push(createPool('Основной процесс'));
+  }
   // Reset counters for consistent IDs
   elementIdCounter = 1;
   flowIdCounter = 1;
@@ -43,7 +58,11 @@ export function generateBpmnXml(process) {
   }
 
   // Transform process recursively
-  function transformProcess(processElements, parentNextId = null) {
+  function transformProcess(processElements, parentNextId = null, localEndEventMap = null, localPendingConnections = null) {
+    // Use local or global endEventMap
+    const effectiveEndEventMap = localEndEventMap || endEventMap;
+    const effectivePendingConnections = localPendingConnections || pendingConnections;
+
     const transformedElements = [];
 
     for (let i = 0; i < processElements.length; i++) {
@@ -232,7 +251,7 @@ export function generateBpmnXml(process) {
             }
             // Store for second pass
             if (elementToConnectId && mergedEndEventIdInBranch) {
-              pendingConnections.push({
+              effectivePendingConnections.push({
                 sourceId: elementToConnectId,
                 targetId: mergedEndEventIdInBranch,
                 label: lastPathElement.label
@@ -316,8 +335,67 @@ export function generateBpmnXml(process) {
     }
   }
 
-  // Transform the process
-  const transformedElements = transformProcess(process);
+  // Process all pools and lanes
+  const processes = new Map(); // Map poolId -> { processId, elements, flows, lanes }
+  const participants = []; // Collaboration participants
+  const messageFlows = diagram.messageFlows || [];
+
+  // First pass: transform each pool's lanes into processes
+  diagram.pools.forEach((pool) => {
+    if (pool.isExternal) {
+      // External participant - add to collaboration but no process
+      participants.push({
+        id: pool.id,
+        name: pool.name,
+        processRef: null,
+      });
+    } else {
+      // Internal pool - create process
+      const processId = `Process_${pool.id}`;
+      const poolElements = [];
+      const poolFlows = [];
+      const poolEndEventMap = new Map(); // Per-pool end event tracking
+      const poolPendingConnections = [];
+
+      // Collect all elements from all lanes
+      const laneElementMap = new Map(); // laneId -> element IDs
+
+      pool.lanes?.forEach((lane) => {
+        if (lane.elements && lane.elements.length > 0) {
+          const laneElementIds = [];
+          lane.elements.forEach((elem) => {
+            if (!elem.id) {
+              elem.id = generateId(elem.type);
+            }
+            laneElementIds.push(elem.id);
+          });
+          laneElementMap.set(lane.id, laneElementIds);
+
+          // Transform this lane's elements
+          const transformedLaneElements = transformProcess(lane.elements, null, poolEndEventMap, poolPendingConnections);
+          poolElements.push(...transformedLaneElements);
+        }
+      });
+
+      // Collect flows from transformProcess (they were added to the main flows array)
+      // Need to separate them by pool
+      // For now, keep using global flows but track by pool
+
+      processes.set(pool.id, {
+        processId,
+        pool,
+        elements: poolElements,
+        lanes: pool.lanes || [],
+        laneElementMap,
+      });
+
+      participants.push({
+        id: pool.id,
+        name: pool.name,
+        processRef: processId,
+      });
+    }
+  });
 
   // Second pass: connect duplicate end events that were skipped
   // This ensures all elements are in elementMap before connecting
@@ -376,8 +454,10 @@ export function generateBpmnXml(process) {
     });
   }
 
-  // Process main process and all nested branches
-  connectDuplicateEndEventsRecursive(process);
+  // Process main process and all nested branches for each pool
+  processes.forEach((processInfo) => {
+    connectDuplicateEndEventsRecursive(processInfo.elements);
+  });
 
   // Process pending connections from branches
   pendingConnections.forEach((conn) => {
@@ -394,7 +474,7 @@ export function generateBpmnXml(process) {
     }
   });
 
-  // Build incoming/outgoing arrays
+  // Build incoming/outgoing arrays for all elements
   flows.forEach((flow) => {
     const source = elementMap.get(flow.sourceRef);
     const target = elementMap.get(flow.targetRef);
@@ -402,11 +482,29 @@ export function generateBpmnXml(process) {
     if (target) target.incoming.push(flow.id);
   });
 
+  // Determine if we need Collaboration
+  // Показываем пулы, даже если он один: для bpmn-js нужен participant.
+  const hasPoolsWithLanes = diagram.pools.some((p) => !p.isExternal && p.lanes && p.lanes.length > 0);
+  const needsCollaboration =
+    diagram.pools.length > 0 || hasPoolsWithLanes || diagram.pools.length > 1 || messageFlows.length > 0;
+
   // Generate XML
-  return buildXml(transformedElements, flows);
+  if (needsCollaboration) {
+    return buildCollaborationXml(processes, participants, messageFlows, flows);
+  } else {
+    // No pools/lanes - use simple process format (legacy backward compatibility)
+    // But this shouldn't happen if we have diagram structure - all diagrams should have at least one pool
+    const firstProcess = processes.size > 0 ? Array.from(processes.values())[0] : null;
+    if (firstProcess) {
+      return buildXml(firstProcess.elements, flows, firstProcess);
+    } else {
+      // Fallback - empty process
+      return buildXml([], flows, null);
+    }
+  }
 }
 
-function buildXml(elements, flows) {
+function buildXml(elements, flows, processInfo = null) {
   const xmlns = 'http://www.omg.org/spec/BPMN/20100524/MODEL';
   const bpmndi = 'http://www.omg.org/spec/BPMN/20100524/DI';
   const dc = 'http://www.omg.org/spec/DD/20100524/DC';
@@ -414,7 +512,23 @@ function buildXml(elements, flows) {
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
   xml += `<definitions xmlns="${xmlns}" xmlns:bpmndi="${bpmndi}" xmlns:dc="${dc}" xmlns:di="${di}" id="definitions_1">\n`;
-  xml += `  <process id="Process_1" isExecutable="false">\n`;
+
+  const processId = processInfo?.processId || 'Process_1';
+  xml += `  <process id="${processId}" isExecutable="false">\n`;
+
+  // Add laneSet if process has lanes
+  if (processInfo && processInfo.lanes && processInfo.lanes.length > 0) {
+    xml += `    <laneSet id="LaneSet_${processId}">\n`;
+    processInfo.lanes.forEach((lane) => {
+      xml += `      <lane id="${lane.id}" name="${escapeXml(lane.name || '')}">\n`;
+      const laneElementIds = processInfo.laneElementMap?.get(lane.id) || [];
+      laneElementIds.forEach((elemId) => {
+        xml += `        <flowNodeRef>${elemId}</flowNodeRef>\n`;
+      });
+      xml += `      </lane>\n`;
+    });
+    xml += `    </laneSet>\n`;
+  }
 
   // Add elements
   elements.forEach((element) => {
@@ -461,6 +575,305 @@ function buildXml(elements, flows) {
   // Add minimal BPMNDI (Diagram Interchange) section for layout server compatibility
   xml += `  <bpmndi:BPMNDiagram id="BPMNDiagram_1">\n`;
   xml += `    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_1">\n`;
+  xml += `    </bpmndi:BPMNPlane>\n`;
+  xml += `  </bpmndi:BPMNDiagram>\n`;
+
+  xml += `</definitions>`;
+
+  return xml;
+}
+
+function buildCollaborationXml(processes, participants, messageFlows, sequenceFlows) {
+  const xmlns = 'http://www.omg.org/spec/BPMN/20100524/MODEL';
+  const bpmndi = 'http://www.omg.org/spec/BPMN/20100524/DI';
+  const dc = 'http://www.omg.org/spec/DD/20100524/DC';
+  const di = 'http://www.omg.org/spec/DD/20100524/DI';
+
+  let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+  xml += `<definitions xmlns="${xmlns}" xmlns:bpmndi="${bpmndi}" xmlns:dc="${dc}" xmlns:di="${di}" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="definitions_1">\n`;
+
+  // Add Collaboration
+  xml += `  <collaboration id="Collaboration_1">\n`;
+
+  // Add participants
+  participants.forEach((participant) => {
+    xml += `    <participant id="${participant.id}" name="${escapeXml(participant.name || '')}"`;
+    if (participant.processRef) {
+      xml += ` processRef="${participant.processRef}"`;
+    }
+    xml += `/>\n`;
+  });
+
+  // Add message flows
+  messageFlows.forEach((msgFlow) => {
+    xml += `    <messageFlow id="${msgFlow.id || `MessageFlow_${flowIdCounter++}`}"`;
+    if (msgFlow.sourceRef) {
+      xml += ` sourceRef="${msgFlow.sourceRef}"`;
+    }
+    if (msgFlow.targetRef) {
+      xml += ` targetRef="${msgFlow.targetRef}"`;
+    }
+    if (msgFlow.name) {
+      xml += ` name="${escapeXml(msgFlow.name)}"`;
+    }
+    xml += `/>\n`;
+  });
+
+  xml += `  </collaboration>\n`;
+
+  // Add processes
+  processes.forEach((processInfo) => {
+    xml += `  <process id="${processInfo.processId}" isExecutable="false">\n`;
+
+    // Add laneSet
+    if (processInfo.lanes && processInfo.lanes.length > 0) {
+      xml += `    <laneSet id="LaneSet_${processInfo.processId}">\n`;
+      processInfo.lanes.forEach((lane) => {
+        xml += `      <lane id="${lane.id}" name="${escapeXml(lane.name || '')}">\n`;
+        const laneElementIds = processInfo.laneElementMap?.get(lane.id) || [];
+        laneElementIds.forEach((elemId) => {
+          xml += `        <flowNodeRef>${elemId}</flowNodeRef>\n`;
+        });
+        xml += `      </lane>\n`;
+      });
+      xml += `    </laneSet>\n`;
+    }
+
+    // Add elements
+    processInfo.elements.forEach((element) => {
+      const tagName = mapElementTypeToTag(element.type);
+      xml += `    <${tagName} id="${element.id}"`;
+      if (element.label) {
+        xml += ` name="${escapeXml(element.label)}"`;
+      }
+      if (element.defaultFlow) {
+        xml += ` default="${element.defaultFlow}"`;
+      }
+      xml += `>\n`;
+
+      // Add incoming flows
+      element.incoming.forEach((flowId) => {
+        xml += `      <incoming>${flowId}</incoming>\n`;
+      });
+
+      // Add outgoing flows
+      element.outgoing.forEach((flowId) => {
+        xml += `      <outgoing>${flowId}</outgoing>\n`;
+      });
+
+      // Add event definition if present
+      if (element.eventDefinition) {
+        const eventDefTag = mapEventDefinitionToTag(element.eventDefinition);
+        xml += `      <${eventDefTag} id="${eventDefTag}_${element.id}"/>\n`;
+      }
+
+      xml += `    </${tagName}>\n`;
+    });
+
+    // Add sequence flows for this process (filter flows by elements in this process)
+    const processElementIds = new Set(processInfo.elements.map(e => e.id));
+    sequenceFlows.forEach((flow) => {
+      if (processElementIds.has(flow.sourceRef) && processElementIds.has(flow.targetRef)) {
+        xml += `    <sequenceFlow id="${flow.id}" sourceRef="${flow.sourceRef}" targetRef="${flow.targetRef}"`;
+        if (flow.condition) {
+          xml += `>\n`;
+          xml += `      <conditionExpression xsi:type="tFormalExpression">${escapeXml(flow.condition)}</conditionExpression>\n`;
+          xml += `    </sequenceFlow>\n`;
+        } else {
+          xml += `/>\n`;
+        }
+      }
+    });
+
+    xml += `  </process>\n`;
+  });
+
+  // --- Minimal DI generation (shapes/edges) so pools/lanes are visible in bpmn-js ---
+  // Simple layout by Y: each pool under previous. Elements spaced along X.
+  let currentY = 0;
+  const planeShapes = [];
+  const planeEdges = [];
+  const elementPositionMap = new Map();
+  const elementSizeMap = new Map();
+  const participantPosByProcess = new Map(); // processId -> {x,y,width,height}
+  const fallbackIndexByProcess = new Map(); // processId -> count for positioning missing nodes
+  const laneHeights = new Map(); // laneId -> height
+  const laneBounds = new Map(); // laneId -> { x, y, w, h }
+  const laneIdByElement = new Map(); // elementId -> laneId
+
+  function pushShape(id, bpmnElement, x, y, w, h) {
+    planeShapes.push(
+      `      <bpmndi:BPMNShape id="Shape_${id}" bpmnElement="${bpmnElement}">\n` +
+        `        <dc:Bounds x="${x}" y="${y}" width="${w}" height="${h}"/>\n` +
+        `      </bpmndi:BPMNShape>\n`
+    );
+  }
+
+  function pushEdge(id, bpmnElement, srcPos, tgtPos) {
+    if (!srcPos || !tgtPos) return;
+    const pts = `      <di:waypoint x="${srcPos.x}" y="${srcPos.y}"/>\n      <di:waypoint x="${tgtPos.x}" y="${tgtPos.y}"/>`;
+    planeEdges.push(
+      `      <bpmndi:BPMNEdge id="Edge_${id}" bpmnElement="${bpmnElement}">\n${pts}\n      </bpmndi:BPMNEdge>\n`
+    );
+  }
+
+  // Collect all element ids in a lane, including nested branch elements
+  function collectAllElementIds(elements, out) {
+    if (!elements) return;
+    elements.forEach((el) => {
+      if (!el.id) {
+        el.id = generateId(el.type);
+      }
+      out.push(el.id);
+      if (el.branches) {
+        el.branches.forEach((branch) => {
+          collectAllElementIds(branch.path, out);
+        });
+      }
+    });
+  }
+
+  participants.forEach((participant) => {
+    const processInfo = [...processes.values()].find((p) => p.processId === participant.processRef);
+    const lanes = processInfo?.lanes || [];
+    const laneCount = Math.max(lanes.length, 1);
+
+    // Pre-calc lane heights based on element count (with nested)
+    const laneHeightsLocal = [];
+    const laneElementsPerLane = [];
+    lanes.forEach((lane) => {
+      const laneElements = [];
+      collectAllElementIds(lane.elements, laneElements);
+      laneElementsPerLane.push(laneElements);
+      const height = Math.max(160, 40 + laneElements.length * 70);
+      laneHeightsLocal.push(height);
+      laneHeights.set(lane.id, height);
+    });
+    // If no lanes, default height
+    if (lanes.length === 0) {
+      laneHeightsLocal.push(160);
+    }
+
+    const totalLaneHeight =
+      laneHeightsLocal.reduce((acc, h) => acc + h, 0) + (laneHeightsLocal.length > 0 ? (laneHeightsLocal.length - 1) * 20 : 0);
+    const participantHeight = Math.max(200, totalLaneHeight);
+    const participantWidth = 1200;
+    const participantX = 0;
+    const participantY = currentY;
+    if (processInfo) {
+      participantPosByProcess.set(processInfo.processId, {
+        x: participantX,
+        y: participantY,
+        w: participantWidth,
+        h: participantHeight,
+      });
+    }
+
+    // Participant shape
+    pushShape(`Participant_${participant.id}`, participant.id, participantX, participantY, participantWidth, participantHeight);
+
+    if (lanes.length > 0) {
+      let laneYAcc = participantY;
+      lanes.forEach((lane, laneIndex) => {
+        const laneElements = laneElementsPerLane[laneIndex] || [];
+        const laneHeight = laneHeights.get(lane.id) || 160;
+        const laneY = laneYAcc;
+        const laneX = participantX + 40;
+        const laneWidth = participantWidth - 40;
+        pushShape(`Lane_${lane.id}`, lane.id, laneX, laneY, laneWidth, laneHeight);
+        laneBounds.set(lane.id, { x: laneX, y: laneY, w: laneWidth, h: laneHeight });
+
+        processInfo.laneElementMap?.set(lane.id, laneElements);
+
+        laneElements.forEach((elemId, idx) => {
+          laneIdByElement.set(elemId, lane.id);
+          const x = laneX + 100 + idx * 200;
+          let y;
+          if (laneElements.length <= 4) {
+            // Для коротких последовательностей — строго по центру дорожки
+            y = laneY + laneHeight / 2;
+          } else {
+            // Разносим элементы по вертикали равномерно
+            const step = Math.max(50, (laneHeight - 80) / Math.max(1, laneElements.length));
+            const yStart = laneY + 40;
+            y = yStart + idx * step;
+            const minY = laneY + 30;
+            const maxY = laneY + laneHeight - 30;
+            if (y < minY) y = minY;
+            if (y > maxY) y = maxY;
+          }
+          elementPositionMap.set(elemId, { x, y });
+        });
+
+        laneYAcc += laneHeight + 20;
+      });
+    } else {
+      const laneHeight = participantHeight;
+      const laneY = participantY;
+      const laneX = participantX + 40;
+      const laneWidth = participantWidth - 40;
+      pushShape(`Lane_${participant.id}_default`, participant.id, laneX, laneY, laneWidth, laneHeight);
+      const processElements = processInfo?.elements || [];
+      processElements.forEach((el, idx) => {
+        const x = laneX + 80 + idx * 160;
+        const y = laneY + laneHeight / 2;
+        elementPositionMap.set(el.id, { x, y });
+      });
+    }
+
+    currentY += participantHeight + 60;
+  });
+
+  // Shapes for flow nodes
+  processes.forEach((processInfo) => {
+    processInfo.elements.forEach((element) => {
+      const pos = elementPositionMap.get(element.id);
+      let finalPos = pos;
+      if (!finalPos) {
+        const participantPos = participantPosByProcess.get(processInfo.processId);
+        const laneId = laneIdByElement.get(element.id);
+        const laneBox = laneId ? laneBounds.get(laneId) : null;
+        const laneElems = laneId ? processInfo.laneElementMap?.get(laneId) || [] : [];
+        const xs = laneElems
+          .map((id) => elementPositionMap.get(id)?.x)
+          .filter((v) => typeof v === 'number');
+        const baseX = xs.length > 0 ? Math.max(...xs) + 150 : (laneBox ? laneBox.x + 100 : participantPos ? participantPos.x + 80 : 80);
+        const baseY = laneBox ? laneBox.y + laneBox.h / 2 : participantPos ? participantPos.y + participantPos.h / 2 : 200;
+        finalPos = { x: baseX, y: baseY };
+        elementPositionMap.set(element.id, finalPos);
+        fallbackIndexByProcess.set(processInfo.processId, (fallbackIndexByProcess.get(processInfo.processId) || 0) + 1);
+      }
+      const isGateway = element.type && element.type.includes('Gateway');
+      const w = isGateway ? 50 : 36;
+      const h = w;
+      const x = finalPos.x - w / 2;
+      const y = finalPos.y - h / 2;
+      elementSizeMap.set(element.id, { w, h });
+      pushShape(`Node_${element.id}`, element.id, x, y, w, h);
+    });
+  });
+
+  // Edges for sequence flows
+  sequenceFlows.forEach((flow) => {
+    const src = elementPositionMap.get(flow.sourceRef);
+    const tgt = elementPositionMap.get(flow.targetRef);
+    if (!src || !tgt) return;
+    const srcSize = elementSizeMap.get(flow.sourceRef) || { w: 36, h: 36 };
+    const tgtSize = elementSizeMap.get(flow.targetRef) || { w: 36, h: 36 };
+    const start = { x: src.x + srcSize.w / 2, y: src.y };
+    const end = { x: tgt.x - tgtSize.w / 2, y: tgt.y };
+    pushEdge(flow.id, flow.id, start, end);
+  });
+
+  // Add BPMNDI with generated shapes/edges
+  xml += `  <bpmndi:BPMNDiagram id="BPMNDiagram_1">\n`;
+  xml += `    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_1">\n`;
+  planeShapes.forEach((s) => {
+    xml += s;
+  });
+  planeEdges.forEach((e) => {
+    xml += e;
+  });
   xml += `    </bpmndi:BPMNPlane>\n`;
   xml += `  </bpmndi:BPMNDiagram>\n`;
 

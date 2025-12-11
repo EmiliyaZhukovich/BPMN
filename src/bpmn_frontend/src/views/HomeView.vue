@@ -177,7 +177,10 @@ export default {
 
         // Try auto-layout first, but don't fail if it doesn't work
         let xmlToImport = bpmnXmlValue;
+        const hasCollaboration = /<collaboration[\s>]/i.test(bpmnXmlValue) || /<participant[\s>]/i.test(bpmnXmlValue);
         try {
+          // Always try auto-layout (including diagrams with Collaboration/pools).
+          // If layout server fails or returns empty result, we fall back to original XML.
           const layoutedXml = await this.processDiagram(bpmnXmlValue);
           if (layoutedXml && layoutedXml.trim() !== '') {
             console.log('Layouted XML received:', layoutedXml.substring(0, 200));
