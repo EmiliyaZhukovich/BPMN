@@ -28,6 +28,7 @@ export function generateBpmnXml(process) {
   const flows = [];
   const elementMap = new Map();
   const endEventMap = new Map(); // Map to track end events by label for merging duplicates
+  const pendingConnections = []; // Store connections that need to be made in second pass
 
   // Helper to add flow
   function addFlow(sourceRef, targetRef, condition = null, flowId = null) {
@@ -57,19 +58,24 @@ export function generateBpmnXml(process) {
 
       let elemId = element.id;
       let isDuplicateEndEvent = false;
+      const originalElementId = element.id; // Keep original ID for duplicate detection
 
       // For end events, check if we already have one with the same label
       if (element.type === 'endEvent' && element.label) {
         const normalizedLabel = element.label.trim().toLowerCase();
         if (endEventMap.has(normalizedLabel)) {
           // Use existing end event ID instead of creating a new one
-          elemId = endEventMap.get(normalizedLabel);
-          isDuplicateEndEvent = true;
-          // Don't create duplicate element, but handle flow connection
-          // The flow will be connected in the normal flow below
+          const existingId = endEventMap.get(normalizedLabel);
+          if (existingId !== originalElementId) {
+            console.log(`Found duplicate end event: "${element.label}" (${originalElementId} -> ${existingId})`);
+            elemId = existingId;
+            isDuplicateEndEvent = true;
+            // Don't create duplicate element, flow connection will be handled in second pass
+          }
         } else {
           // First time seeing this end event label, register it
-          endEventMap.set(normalizedLabel, elemId);
+          console.log(`Registering new end event: "${element.label}" (${originalElementId})`);
+          endEventMap.set(normalizedLabel, originalElementId);
         }
       }
 
@@ -160,40 +166,36 @@ export function generateBpmnXml(process) {
       // Check if branch ends with end event
       const lastPathElement = branch.path[branch.path.length - 1];
       const branchEndsWithEndEvent = lastPathElement.type === 'endEvent';
+      let isDuplicateEndEventInBranch = false;
+      let mergedEndEventIdInBranch = null;
 
         // Transform branch path - don't pass joinGatewayId if branch ends with end event
         const branchTargetId = branchEndsWithEndEvent ? null : joinGatewayId;
         const branchElements = transformProcess(branch.path, branchTargetId);
 
         // Check if the last element is a duplicate end event
-        let lastElementId = null;
-        let mergedEndEventId = null;
-        if (branchElements.length > 0) {
+        if (branchEndsWithEndEvent && branchElements.length > 0) {
           const lastBranchElement = branchElements[branchElements.length - 1];
           if (lastBranchElement.type === 'endEvent' && lastBranchElement.label) {
             const normalizedLabel = lastBranchElement.label.trim().toLowerCase();
             if (endEventMap.has(normalizedLabel)) {
-              mergedEndEventId = endEventMap.get(normalizedLabel);
-              // If this is a duplicate, we'll connect to the merged one instead
-              if (mergedEndEventId !== lastBranchElement.id) {
+              const firstEndEventId = endEventMap.get(normalizedLabel);
+              if (firstEndEventId !== lastBranchElement.id) {
+                // This is a duplicate - mark it and store the ID of the first occurrence
+                isDuplicateEndEventInBranch = true;
+                mergedEndEventIdInBranch = firstEndEventId;
                 // Remove the duplicate from branchElements
                 branchElements.pop();
-                // Get the element before the end event to connect it
-                if (branchElements.length > 0) {
-                  lastElementId = branchElements[branchElements.length - 1].id;
-                } else {
-                  // No elements before end event, connect gateway directly
-                  lastElementId = gateway.id;
-                }
               }
             }
           }
         }
 
-        // Filter out duplicate end events
+        // Filter out duplicate end events (keep only first occurrence)
         const uniqueBranchElements = branchElements.filter((elem) => {
           if (elem.type === 'endEvent' && elem.label) {
             const normalizedLabel = elem.label.trim().toLowerCase();
+            // Keep only if this is the first occurrence (registered in endEventMap)
             return endEventMap.get(normalizedLabel) === elem.id;
           }
           return true;
@@ -218,32 +220,27 @@ export function generateBpmnXml(process) {
           }
         } else if (branchEndsWithEndEvent) {
           hasBranchesEndingInEndEvent = true;
-          // Connect to merged end event if it exists
-          if (mergedEndEventId) {
-            // Determine what to connect to the merged end event
-            let elementToConnect = null;
-            if (lastElementId) {
-              // We have a stored last element ID from when we removed the duplicate
-              elementToConnect = elementMap.get(lastElementId);
-            } else if (uniqueBranchElements.length > 0) {
-              // Use the last element in the branch
-              elementToConnect = uniqueBranchElements[uniqueBranchElements.length - 1];
+          // If this branch ends with a duplicate end event, store connection info for second pass
+          if (isDuplicateEndEventInBranch && mergedEndEventIdInBranch) {
+            let elementToConnectId = null;
+            if (uniqueBranchElements.length > 0) {
+              // Connect the last element in the branch to the merged end event
+              elementToConnectId = uniqueBranchElements[uniqueBranchElements.length - 1].id;
+            } else {
+              // Branch has only the end event (which was duplicate), connect gateway directly
+              elementToConnectId = gateway.id;
             }
-
-            if (elementToConnect && elementMap.has(elementToConnect.id) && elementMap.has(mergedEndEventId)) {
-              // Check if flow already exists
-              const flowExists = flows.some(
-                (f) => f.sourceRef === elementToConnect.id && f.targetRef === mergedEndEventId
-              );
-              if (!flowExists) {
-                addFlow(elementToConnect.id, mergedEndEventId);
-              }
+            // Store for second pass
+            if (elementToConnectId && mergedEndEventIdInBranch) {
+              pendingConnections.push({
+                sourceId: elementToConnectId,
+                targetId: mergedEndEventIdInBranch,
+                label: lastPathElement.label
+              });
             }
-          } else if (uniqueBranchElements.length > 0) {
-            // Normal case - connect last element (which should be end event)
-            const lastElement = uniqueBranchElements[uniqueBranchElements.length - 1];
-            // Flow is already created in transformProcess for sequential elements
           }
+          // Normal case - branch ends with end event (first occurrence)
+          // Flow is already created in transformProcess for sequential elements
         }
       }
     });
@@ -324,34 +321,76 @@ export function generateBpmnXml(process) {
 
   // Second pass: connect duplicate end events that were skipped
   // This ensures all elements are in elementMap before connecting
-  process.forEach((element, index) => {
-    if (element.type === 'endEvent' && element.label) {
-      const normalizedLabel = element.label.trim().toLowerCase();
-      if (endEventMap.has(normalizedLabel)) {
-        const existingEndEventId = endEventMap.get(normalizedLabel);
-        if (index > 0) {
-          const prevElement = process[index - 1];
-          let prevElemId = prevElement.id;
+  function connectDuplicateEndEventsRecursive(elements, parentGatewayId = null) {
+    elements.forEach((element, index) => {
+      if (element.type === 'endEvent' && element.label) {
+        const normalizedLabel = element.label.trim().toLowerCase();
+        if (endEventMap.has(normalizedLabel)) {
+          const existingEndEventId = endEventMap.get(normalizedLabel);
+          // Only process if this is a duplicate (not the first occurrence)
+          if (element.id !== existingEndEventId) {
+            let prevElemId = null;
 
-          // If previous element is a gateway, check for join gateway
-          if (prevElement.type === 'exclusiveGateway' || prevElement.type === 'inclusiveGateway') {
-            const joinGatewayId = `${prevElement.id}-join`;
-            if (elementMap.has(joinGatewayId)) {
-              prevElemId = joinGatewayId;
+            // Find previous element to connect
+            if (index > 0) {
+              const prevElement = elements[index - 1];
+              prevElemId = prevElement.id;
+
+              // If previous element is a gateway, check for join gateway
+              if (prevElement.type === 'exclusiveGateway' || prevElement.type === 'inclusiveGateway') {
+                const joinGatewayId = `${prevElement.id}-join`;
+                if (elementMap.has(joinGatewayId)) {
+                  prevElemId = joinGatewayId;
+                }
+              }
+            } else if (parentGatewayId) {
+              // This element is first in a branch, connect from parent gateway
+              prevElemId = parentGatewayId;
             }
-          }
 
-          // Connect if both elements exist and flow doesn't already exist
-          if (elementMap.has(prevElemId) && elementMap.has(existingEndEventId)) {
-            const flowExists = flows.some(
-              (f) => f.sourceRef === prevElemId && f.targetRef === existingEndEventId
-            );
-            if (!flowExists) {
-              addFlow(prevElemId, existingEndEventId);
+            // Connect if both elements exist and flow doesn't already exist
+            if (prevElemId && elementMap.has(prevElemId) && elementMap.has(existingEndEventId)) {
+              const flowExists = flows.some(
+                (f) => f.sourceRef === prevElemId && f.targetRef === existingEndEventId
+              );
+              if (!flowExists) {
+                console.log(`Connecting duplicate end event: ${prevElemId} -> ${existingEndEventId} (${element.label})`);
+                addFlow(prevElemId, existingEndEventId);
+              }
+            } else {
+              console.warn(`Cannot connect duplicate end event: prevElemId=${prevElemId}, existingEndEventId=${existingEndEventId}, prevInMap=${prevElemId ? elementMap.has(prevElemId) : false}, endInMap=${elementMap.has(existingEndEventId)}`);
             }
           }
         }
       }
+
+      // Recursively process branches
+      if (element.branches) {
+        element.branches.forEach((branch) => {
+          if (branch.path && branch.path.length > 0) {
+            // Pass the gateway element ID so we can connect from it if needed
+            connectDuplicateEndEventsRecursive(branch.path, element.id);
+          }
+        });
+      }
+    });
+  }
+
+  // Process main process and all nested branches
+  connectDuplicateEndEventsRecursive(process);
+
+  // Process pending connections from branches
+  pendingConnections.forEach((conn) => {
+    if (elementMap.has(conn.sourceId) && elementMap.has(conn.targetId)) {
+      const flowExists = flows.some(
+        (f) => f.sourceRef === conn.sourceId && f.targetRef === conn.targetId
+      );
+      if (!flowExists) {
+        console.log(`Processing pending connection: ${conn.sourceId} -> ${conn.targetId} (${conn.label})`);
+        addFlow(conn.sourceId, conn.targetId);
+      }
+    } else {
+      console.warn(`Cannot process pending connection: sourceId=${conn.sourceId}, targetId=${conn.targetId}, sourceInMap=${elementMap.has(conn.sourceId)}, targetInMap=${elementMap.has(conn.targetId)}`);
     }
   });
 
