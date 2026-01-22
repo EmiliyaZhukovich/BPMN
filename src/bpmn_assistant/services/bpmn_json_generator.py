@@ -7,7 +7,7 @@ from bpmn_assistant.core.enums import BPMNElementType
 
 class BpmnJsonGenerator:
     """
-    Class to generate the JSON representation of a BPMN process from the BPMN XML.
+    Класс для генерации JSON-представления процесса BPMN из XML-представления BPMN.
     """
 
     def __init__(self):

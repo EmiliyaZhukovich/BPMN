@@ -1,7 +1,9 @@
+# настройки логирования в приложении
 import codecs
 import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
+
 
 
 class CustomFormatter(logging.Formatter):

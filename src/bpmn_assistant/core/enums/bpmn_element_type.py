@@ -20,7 +20,7 @@ class BPMNElementType(Enum):
 
 
 class EventDefinitionType(Enum):
-    """Event definition types for BPMN events"""
+    """Типы определения событий для событий BPMN"""
     TIMER = "timerEventDefinition"
     MESSAGE = "messageEventDefinition"
-    NONE = None  # For events without definitions
+    NONE = None  # Для событий без определений

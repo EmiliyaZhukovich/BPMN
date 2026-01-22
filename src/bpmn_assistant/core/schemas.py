@@ -17,8 +17,8 @@ class MessageImage(BaseModel):
 
 class MessageItem(BaseModel):
     """
-    A message item used for LLM API communication.
-    Supports text content and optional images for vision-enabled models.
+    A message item.
+    Supports text content and optional images.
     """
 
     role: str

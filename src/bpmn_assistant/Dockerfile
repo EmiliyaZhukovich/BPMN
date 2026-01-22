@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Copy pyproject.toml and uv.lock for dependency management
 COPY pyproject.toml /app/
-COPY uv.lock /app/
+
 
 # Install uv
 RUN pip install --no-cache-dir uv
@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir uv
 COPY ./src/bpmn_assistant /app/src/bpmn_assistant
 
 # Install dependencies
-RUN uv sync
+RUN uv sync --no-dev
 
 # Install bpmn_assistant package
 RUN uv pip install --no-cache-dir -e .

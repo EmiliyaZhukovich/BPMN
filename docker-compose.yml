@@ -6,8 +6,6 @@ services:
       dockerfile: ./src/bpmn_assistant/Dockerfile
     ports:
         - "8000:8000"
-    env_file:
-      - ./src/bpmn_assistant/.env
     networks:
       - bpmn-network
 

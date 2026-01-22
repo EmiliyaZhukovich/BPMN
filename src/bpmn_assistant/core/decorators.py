@@ -12,7 +12,7 @@ def handle_exceptions(func: Callable):
         try:
             return await func(*args, **kwargs)
         except Exception as e:
-            logger.error(f"Error: {str(e)}", exc_info=e)
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error(f"Error: {str(e)}", exc_info=e) #если ошибка — залогировать её
+            raise HTTPException(status_code=500, detail=str(e)) #вернуть клиенту HTTP 500 Internal Server Error
 
     return wrapper
