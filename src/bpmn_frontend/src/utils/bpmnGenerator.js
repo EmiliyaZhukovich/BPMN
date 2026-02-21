@@ -3,7 +3,7 @@
  * Converts hierarchical process structure to BPMN XML format
  */
 
-import { migrateToDiagramModel, createEmptyDiagram, createPool } from './diagramModel.js';
+import { migrateToDiagramModel, createEmptyDiagram } from './diagramModel.js';
 
 let elementIdCounter = 1;
 let flowIdCounter = 1;
@@ -31,9 +31,7 @@ export function generateBpmnXml(diagramOrProcess) {
     // New format
     diagram = diagramOrProcess;
   } else {
-    // Empty or invalid - create empty diagram
     diagram = createEmptyDiagram();
-    diagram.pools.push(createPool('Основной процесс'));
   }
   // Reset counters for consistent IDs
   elementIdCounter = 1;
@@ -335,66 +333,47 @@ export function generateBpmnXml(diagramOrProcess) {
     }
   }
 
-  // Process all pools and lanes
-  const processes = new Map(); // Map poolId -> { processId, elements, flows, lanes }
-  const participants = []; // Collaboration participants
-  const messageFlows = diagram.messageFlows || [];
+  // Диаграмма «Процесс» — один пул с дорожками
+  const processes = new Map();
+  const participants = [];
 
-  // First pass: transform each pool's lanes into processes
   diagram.pools.forEach((pool) => {
-    if (pool.isExternal) {
-      // External participant - add to collaboration but no process
-      participants.push({
-        id: pool.id,
-        name: pool.name,
-        processRef: null,
-      });
-    } else {
-      // Internal pool - create process
-      const processId = `Process_${pool.id}`;
-      const poolElements = [];
-      const poolFlows = [];
-      const poolEndEventMap = new Map(); // Per-pool end event tracking
-      const poolPendingConnections = [];
+    const processId = `Process_${pool.id}`;
+    const poolElements = [];
+    const poolEndEventMap = new Map();
+    const poolPendingConnections = [];
+    const laneElementMap = new Map();
 
-      // Collect all elements from all lanes
-      const laneElementMap = new Map(); // laneId -> element IDs
+    pool.lanes?.forEach((lane) => {
+      if (lane.elements && lane.elements.length > 0) {
+        lane.elements.forEach((elem) => {
+          if (!elem.id) {
+            elem.id = generateId(elem.type);
+          }
+        });
+        const transformedLaneElements = transformProcess(lane.elements, null, poolEndEventMap, poolPendingConnections);
+        poolElements.push(...transformedLaneElements);
+      }
+    });
 
-      pool.lanes?.forEach((lane) => {
-        if (lane.elements && lane.elements.length > 0) {
-          const laneElementIds = [];
-          lane.elements.forEach((elem) => {
-            if (!elem.id) {
-              elem.id = generateId(elem.type);
-            }
-            laneElementIds.push(elem.id);
-          });
-          laneElementMap.set(lane.id, laneElementIds);
+    // Все элементы процесса (включая из веток шлюзов) привязываем к дорожке — для корректного layout и flowNodeRef
+    pool.lanes?.forEach((lane) => {
+      laneElementMap.set(lane.id, poolElements.map((e) => e.id));
+    });
 
-          // Transform this lane's elements
-          const transformedLaneElements = transformProcess(lane.elements, null, poolEndEventMap, poolPendingConnections);
-          poolElements.push(...transformedLaneElements);
-        }
-      });
+    processes.set(pool.id, {
+      processId,
+      pool,
+      elements: poolElements,
+      lanes: pool.lanes || [],
+      laneElementMap,
+    });
 
-      // Collect flows from transformProcess (they were added to the main flows array)
-      // Need to separate them by pool
-      // For now, keep using global flows but track by pool
-
-      processes.set(pool.id, {
-        processId,
-        pool,
-        elements: poolElements,
-        lanes: pool.lanes || [],
-        laneElementMap,
-      });
-
-      participants.push({
-        id: pool.id,
-        name: pool.name,
-        processRef: processId,
-      });
-    }
+    participants.push({
+      id: pool.id,
+      name: pool.name,
+      processRef: processId,
+    });
   });
 
   // Second pass: connect duplicate end events that were skipped
@@ -482,26 +461,17 @@ export function generateBpmnXml(diagramOrProcess) {
     if (target) target.incoming.push(flow.id);
   });
 
-  // Determine if we need Collaboration
-  // Показываем пулы, даже если он один: для bpmn-js нужен participant.
-  const hasPoolsWithLanes = diagram.pools.some((p) => !p.isExternal && p.lanes && p.lanes.length > 0);
-  const needsCollaboration =
-    diagram.pools.length > 0 || hasPoolsWithLanes || diagram.pools.length > 1 || messageFlows.length > 0;
+  const hasPoolsWithLanes = diagram.pools.some((p) => p.lanes && p.lanes.length > 0);
+  const needsCollaboration = diagram.pools.length > 0 && hasPoolsWithLanes;
 
-  // Generate XML
   if (needsCollaboration) {
-    return buildCollaborationXml(processes, participants, messageFlows, flows);
-  } else {
-    // No pools/lanes - use simple process format (legacy backward compatibility)
-    // But this shouldn't happen if we have diagram structure - all diagrams should have at least one pool
-    const firstProcess = processes.size > 0 ? Array.from(processes.values())[0] : null;
-    if (firstProcess) {
-      return buildXml(firstProcess.elements, flows, firstProcess);
-    } else {
-      // Fallback - empty process
-      return buildXml([], flows, null);
-    }
+    return buildCollaborationXml(processes, participants, [], flows);
   }
+  const firstProcess = processes.size > 0 ? Array.from(processes.values())[0] : null;
+  if (firstProcess) {
+    return buildXml(firstProcess.elements, flows, firstProcess);
+  }
+  return buildXml([], flows, null);
 }
 
 function buildXml(elements, flows, processInfo = null) {
@@ -604,21 +574,6 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     xml += `/>\n`;
   });
 
-  // Add message flows
-  messageFlows.forEach((msgFlow) => {
-    xml += `    <messageFlow id="${msgFlow.id || `MessageFlow_${flowIdCounter++}`}"`;
-    if (msgFlow.sourceRef) {
-      xml += ` sourceRef="${msgFlow.sourceRef}"`;
-    }
-    if (msgFlow.targetRef) {
-      xml += ` targetRef="${msgFlow.targetRef}"`;
-    }
-    if (msgFlow.name) {
-      xml += ` name="${escapeXml(msgFlow.name)}"`;
-    }
-    xml += `/>\n`;
-  });
-
   xml += `  </collaboration>\n`;
 
   // Add processes
@@ -712,6 +667,14 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
   function pushEdge(id, bpmnElement, srcPos, tgtPos) {
     if (!srcPos || !tgtPos) return;
     const pts = `      <di:waypoint x="${srcPos.x}" y="${srcPos.y}"/>\n      <di:waypoint x="${tgtPos.x}" y="${tgtPos.y}"/>`;
+    planeEdges.push(
+      `      <bpmndi:BPMNEdge id="Edge_${id}" bpmnElement="${bpmnElement}">\n${pts}\n      </bpmndi:BPMNEdge>\n`
+    );
+  }
+
+  function pushEdgeOrthogonal(id, bpmnElement, waypoints) {
+    if (!waypoints || waypoints.length < 2) return;
+    const pts = waypoints.map((p) => `      <di:waypoint x="${p.x}" y="${p.y}"/>`).join('\n');
     planeEdges.push(
       `      <bpmndi:BPMNEdge id="Edge_${id}" bpmnElement="${bpmnElement}">\n${pts}\n      </bpmndi:BPMNEdge>\n`
     );
@@ -853,6 +816,16 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     });
   });
 
+  // Порядок исходящих потоков у шлюзов (для ортогональной маршрутизации по BPMN)
+  const gatewayOutgoing = new Map();
+  processes.forEach((processInfo) => {
+    processInfo.elements.forEach((el) => {
+      if (el.type && (el.type === 'exclusiveGateway' || el.type === 'inclusiveGateway' || el.type === 'parallelGateway') && el.outgoing && el.outgoing.length > 1) {
+        gatewayOutgoing.set(el.id, el.outgoing);
+      }
+    });
+  });
+
   // Edges for sequence flows
   sequenceFlows.forEach((flow) => {
     const src = elementPositionMap.get(flow.sourceRef);
@@ -860,9 +833,30 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     if (!src || !tgt) return;
     const srcSize = elementSizeMap.get(flow.sourceRef) || { w: 36, h: 36 };
     const tgtSize = elementSizeMap.get(flow.targetRef) || { w: 36, h: 36 };
-    const start = { x: src.x + srcSize.w / 2, y: src.y };
-    const end = { x: tgt.x - tgtSize.w / 2, y: tgt.y };
-    pushEdge(flow.id, flow.id, start, end);
+    const outList = gatewayOutgoing.get(flow.sourceRef);
+    const isFromGatewayWithBranches = outList && outList.length > 1;
+
+    if (isFromGatewayWithBranches) {
+      const outIndex = outList.indexOf(flow.id);
+      const nOut = outList.length;
+      // Выход из верхней/нижней вершин ромба: (center_x, top) и (center_x, bottom)
+      const exitX = src.x;
+      const exitY = nOut <= 1
+        ? src.y
+        : src.y - srcSize.h / 2 + (outIndex / (nOut - 1)) * srcSize.h;
+      const tgtCenterY = tgt.y;
+      const tgtLeft = tgt.x - tgtSize.w / 2;
+      const waypoints = [
+        { x: exitX, y: exitY },
+        { x: exitX, y: tgtCenterY },
+        { x: tgtLeft, y: tgtCenterY },
+      ];
+      pushEdgeOrthogonal(flow.id, flow.id, waypoints);
+    } else {
+      const start = { x: src.x + srcSize.w / 2, y: src.y };
+      const end = { x: tgt.x - tgtSize.w / 2, y: tgt.y };
+      pushEdge(flow.id, flow.id, start, end);
+    }
   });
 
   // Add BPMNDI with generated shapes/edges

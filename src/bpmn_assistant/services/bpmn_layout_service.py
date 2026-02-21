@@ -275,13 +275,35 @@ class BpmnLayoutService:
                 offset_x = desired_left - min_x
                 offset_y = desired_top - min_y
 
+                # Номер ветки для каждого элемента (0 = основной поток, 1,2,... = параллельные ветки шлюза)
+                element_to_branch = self._get_element_to_branch(proc)
+                # Шлюзы и порядок исходящих потоков — для ортогональной маршрутизации стрелок
+                gateway_ids, gateway_outgoing = self._get_gateway_info(proc)
+                # Вертикальное смещение по веткам, чтобы параллельные ветки не перекрывались
+                def branch_y_offset(branch_idx: int) -> float:
+                    if branch_idx <= 0:
+                        return 0.0
+                    half = (branch_idx + 1) // 2
+                    sign = 1 if branch_idx % 2 == 0 else -1
+                    return sign * 100 * half
+
                 # element_to_lane и lane_bounds_map уже созданы выше из оригинального XML
+                # Карта скорректированных границ элементов (для привязки стрелок к центрам фигур)
+                shape_adjusted_bounds = {}
 
                 # Применяем offset к shapes и корректируем Y-координаты по дорожкам
                 for sxml in shapes_for_proc:
                     # Извлекаем element ID
                     be_match = re.search(r'bpmnElement="([^"]+)"', sxml, re.IGNORECASE)
                     element_id = be_match.group(1) if be_match else None
+
+                    # Размеры фигуры (для карты bounds и стрелок)
+                    x_match = re.search(r'x="([0-9+.\-eE]+)"', sxml, re.IGNORECASE)
+                    y_match = re.search(r'y="([0-9+.\-eE]+)"', sxml, re.IGNORECASE)
+                    w_match = re.search(r'width="([0-9+.\-eE]+)"', sxml, re.IGNORECASE)
+                    h_match = re.search(r'height="([0-9+.\-eE]+)"', sxml, re.IGNORECASE)
+                    shape_w = float(w_match.group(1)) if w_match else 36
+                    shape_h = float(h_match.group(1)) if h_match else 36
 
                     # Определяем lane для этого элемента
                     lane_id = element_to_lane.get(element_id) if element_id else None
@@ -293,24 +315,20 @@ class BpmnLayoutService:
 
                     if lane_id and lane_id in lane_bounds_map:
                         lane_bounds = lane_bounds_map[lane_id]
-                        # Центрируем элемент в дорожке по вертикали
-                        # Высота элемента обычно 80 для задач, 36 для событий
-                        element_height = 80  # default для задач
-                        height_match = re.search(
-                            r'height="([0-9+.\-eE]+)"', sxml, re.IGNORECASE
-                        )
-                        if height_match:
-                            element_height = float(height_match.group(1))
-                        # Центр дорожки минус половина высоты элемента
+                        # Центрируем элемент в дорожке по вертикали + смещение по ветке
+                        element_height = shape_h
                         lane_center_y = lane_bounds["y"] + lane_bounds["height"] / 2
-                        desired_y = lane_center_y - element_height / 2
-                        # Используем desired_y напрямую, а не через offset
-                        # Но нужно учесть offset_x для X координаты
-                        current_x_match = re.search(
-                            r'x="([0-9+.\-eE]+)"', sxml, re.IGNORECASE
-                        )
-                        current_x = float(current_x_match.group(1)) if current_x_match else 0
+                        branch_idx = element_to_branch.get(element_id, 0)
+                        desired_y = lane_center_y - element_height / 2 + branch_y_offset(branch_idx)
+                        current_x = float(x_match.group(1)) if x_match else 0
                         new_x = current_x + offset_x
+                        if element_id:
+                            shape_adjusted_bounds[element_id] = {
+                                "x": new_x,
+                                "y": desired_y,
+                                "w": shape_w,
+                                "h": shape_h,
+                            }
 
                         # Заменяем координаты - используем простую замену через regex
                         # Сначала заменяем x, потом y (они могут быть в любом порядке)
@@ -348,11 +366,23 @@ class BpmnLayoutService:
                                 flags=re.IGNORECASE,
                             )
                     else:
-                        # Если нет информации о дорожке, используем стандартный offset
+                        # Если нет информации о дорожке, используем стандартный offset + смещение по ветке
+                        current_x = float(x_match.group(1)) if x_match else 0
+                        current_y = float(y_match.group(1)) if y_match else 0
+                        branch_idx = element_to_branch.get(element_id, 0)
+                        adj_y = current_y + offset_y + branch_y_offset(branch_idx)
+                        if element_id:
+                            shape_adjusted_bounds[element_id] = {
+                                "x": current_x + offset_x,
+                                "y": adj_y,
+                                "w": shape_w,
+                                "h": shape_h,
+                            }
                         adjusted = re.sub(
-                            r"<dc:Bounds([^>]*)>",
-                            lambda m: self._adjust_bounds(m.group(1), offset_x, offset_y),
+                            r'<dc:Bounds([^>]*)>',
+                            lambda m: f'<dc:Bounds x="{current_x + offset_x}" y="{adj_y}" width="{shape_w}" height="{shape_h}" />',
                             sxml,
+                            count=1,
                             flags=re.IGNORECASE,
                         )
                     collected_shapes.append(adjusted)
@@ -384,97 +414,104 @@ class BpmnLayoutService:
                             source_id = flow_xml_match.group(1)
                             target_id = flow_xml_match.group(2)
 
-                    # Определяем Y-координаты для waypoints на основе дорожек
-                    # По умолчанию используем offset_y, но если элементы в дорожках - используем центры дорожек
-                    first_waypoint_y = offset_y + 22  # default offset внутри participant
-                    last_waypoint_y = offset_y + 22
+                    # Точки подключения стрелки: от правого центра source к левому центру target
+                    first_wp_x = first_wp_y = last_wp_x = last_wp_y = None
+                    if source_id and target_id and source_id in shape_adjusted_bounds and target_id in shape_adjusted_bounds:
+                        sb = shape_adjusted_bounds[source_id]
+                        tb = shape_adjusted_bounds[target_id]
+                        first_wp_x = sb["x"] + sb["w"]
+                        first_wp_y = sb["y"] + sb["h"] / 2
+                        last_wp_x = tb["x"]
+                        last_wp_y = tb["y"] + tb["h"] / 2
 
-                    if source_id and target_id:
-                        source_lane = element_to_lane.get(source_id)
-                        target_lane = element_to_lane.get(target_id)
-
-                        if source_lane and lane_bounds_map.get(source_lane):
-                            source_lane_center = (
-                                lane_bounds_map[source_lane]["y"]
-                                + lane_bounds_map[source_lane]["height"] / 2
-                            )
-                            first_waypoint_y = source_lane_center
-                        elif source_id:
-                            # Если элемент не в дорожке, используем его текущую Y координату
-                            # Найдем shape для source элемента
-                            source_shape_match = re.search(
-                                f'<bpmndi:BPMNShape[\\s\\S]*?bpmnElement="{re.escape(source_id)}"[\\s\\S]*?</bpmndi:BPMNShape>',
-                                "\n".join(shapes_for_proc),
-                                re.IGNORECASE,
-                            )
-                            if source_shape_match:
-                                source_y_match = re.search(
-                                    r'y="([0-9+.\-eE]+)"',
-                                    source_shape_match.group(0),
-                                    re.IGNORECASE,
-                                )
-                                if source_y_match:
-                                    source_y = float(source_y_match.group(1))
-                                    first_waypoint_y = source_y + 40  # центр элемента (примерно)
-
-                        if target_lane and lane_bounds_map.get(target_lane):
-                            target_lane_center = (
-                                lane_bounds_map[target_lane]["y"]
-                                + lane_bounds_map[target_lane]["height"] / 2
-                            )
-                            last_waypoint_y = target_lane_center
-                        elif target_id:
-                            # Если элемент не в дорожке, используем его текущую Y координату
-                            target_shape_match = re.search(
-                                f'<bpmndi:BPMNShape[\\s\\S]*?bpmnElement="{re.escape(target_id)}"[\\s\\S]*?</bpmndi:BPMNShape>',
-                                "\n".join(shapes_for_proc),
-                                re.IGNORECASE,
-                            )
-                            if target_shape_match:
-                                target_y_match = re.search(
-                                    r'y="([0-9+.\-eE]+)"',
-                                    target_shape_match.group(0),
-                                    re.IGNORECASE,
-                                )
-                                if target_y_match:
-                                    target_y = float(target_y_match.group(1))
-                                    last_waypoint_y = target_y + 40  # центр элемента (примерно)
-
-                    # Применяем корректировку waypoints
-                    # Находим все waypoints и заменяем их координаты
-                    waypoint_pattern = r'<di:waypoint[^>]*>'
-                    waypoint_matches = list(re.finditer(waypoint_pattern, exml, re.IGNORECASE))
+                    waypoint_pattern = re.compile(r'<di:waypoint[^>]*>', re.IGNORECASE)
+                    waypoint_matches = list(waypoint_pattern.finditer(exml))
                     waypoint_total = len(waypoint_matches)
 
-                    if waypoint_total > 0:
+                    # Ортогональная маршрутизация для стрелок из шлюза (нотация BPMN)
+                    is_from_gateway = (
+                        source_id in gateway_ids
+                        and flow_id
+                        and gateway_outgoing.get(source_id)
+                        and len(gateway_outgoing[source_id]) > 1
+                    )
+                    if is_from_gateway and first_wp_x is not None and last_wp_x is not None:
+                        out_list = gateway_outgoing[source_id]
+                        try:
+                            out_index = out_list.index(flow_id)
+                        except ValueError:
+                            out_index = 0
+                        n_out = len(out_list)
+                        # По нотации BPMN: стрелки выходят из верхней и нижней вершин ромба (center_x, top) и (center_x, bottom)
+                        exit_x = sb["x"] + sb["w"] / 2
+                        if n_out <= 1:
+                            exit_y = sb["y"] + sb["h"] / 2
+                        else:
+                            exit_y = sb["y"] + (out_index / (n_out - 1)) * sb["h"]
+                        # Три точки: вершина ромба → вертикально до уровня цели → горизонтально к цели
+                        waypoints = [
+                            (exit_x, exit_y),
+                            (exit_x, last_wp_y),
+                            (last_wp_x, last_wp_y),
+                        ]
+                        wp_lines = "\n".join(
+                            f'      <di:waypoint x="{x}" y="{y}"/>' for x, y in waypoints
+                        )
+                        adjusted_edge = re.sub(
+                            r"(<bpmndi:BPMNEdge[^>]*>)\s*[\s\S]*?(\s*</bpmndi:BPMNEdge>)",
+                            r"\1\n" + wp_lines + r"\n      \2",
+                            exml,
+                            count=1,
+                            flags=re.IGNORECASE,
+                        )
+                        collected_edges.append(adjusted_edge)
+                    elif waypoint_total > 0 and first_wp_x is not None and last_wp_x is not None:
+                        # Обычная стрелка: два waypoint (источник — цель)
                         adjusted_edge = exml
                         for idx, wp_match in enumerate(waypoint_matches):
                             wp = wp_match.group(0)
                             is_first = idx == 0
                             is_last = idx == waypoint_total - 1
-
-                            # Определяем Y координату для этого waypoint
+                            if is_first:
+                                new_waypoint = f'<di:waypoint x="{first_wp_x}" y="{first_wp_y}"/>'
+                            elif is_last:
+                                new_waypoint = f'<di:waypoint x="{last_wp_x}" y="{last_wp_y}"/>'
+                            else:
+                                progress = idx / (waypoint_total - 1)
+                                mid_x = first_wp_x + (last_wp_x - first_wp_x) * progress
+                                mid_y = first_wp_y + (last_wp_y - first_wp_y) * progress
+                                new_waypoint = f'<di:waypoint x="{mid_x}" y="{mid_y}"/>'
+                            adjusted_edge = adjusted_edge.replace(wp, new_waypoint, 1)
+                        collected_edges.append(adjusted_edge)
+                    else:
+                        # Fallback: как раньше — offset по X и Y по центру дорожки/фигуры
+                        first_waypoint_y = offset_y + 22
+                        last_waypoint_y = offset_y + 22
+                        if source_id and target_id:
+                            if source_id in shape_adjusted_bounds:
+                                sb = shape_adjusted_bounds[source_id]
+                                first_waypoint_y = sb["y"] + sb["h"] / 2
+                            if target_id in shape_adjusted_bounds:
+                                tb = shape_adjusted_bounds[target_id]
+                                last_waypoint_y = tb["y"] + tb["h"] / 2
+                        adjusted_edge = exml
+                        for idx, wp_match in enumerate(waypoint_matches):
+                            wp = wp_match.group(0)
+                            is_first = idx == 0
+                            is_last = idx == waypoint_total - 1
                             if is_first:
                                 y_adjust = first_waypoint_y
                             elif is_last:
                                 y_adjust = last_waypoint_y
                             else:
-                                # Интерполируем между first и last
                                 progress = idx / (waypoint_total - 1)
                                 y_adjust = first_waypoint_y + (last_waypoint_y - first_waypoint_y) * progress
-
-                            # Извлекаем текущую X координату
-                            x_match = re.search(r'x="([0-9+.\-eE]+)"', wp, re.IGNORECASE)
-                            current_x = float(x_match.group(1)) if x_match else 0
+                            x_m = re.search(r'x="([0-9+.\-eE]+)"', wp, re.IGNORECASE)
+                            current_x = float(x_m.group(1)) if x_m else 0
                             new_x = current_x + offset_x
-
-                            # Заменяем waypoint
                             new_waypoint = f'<di:waypoint x="{new_x}" y="{y_adjust}"/>'
                             adjusted_edge = adjusted_edge.replace(wp, new_waypoint, 1)
-                    else:
-                        adjusted_edge = exml
-
-                    collected_edges.append(adjusted_edge)
+                        collected_edges.append(adjusted_edge)
 
             # Извлекаем оригинальный BPMNDI diagram (если есть)
             if not original_diagram_match:
@@ -540,6 +577,87 @@ class BpmnLayoutService:
         except Exception as e:
             # В случае ошибки возвращаем оригинальный XML
             return bpmn_xml
+
+    def _get_element_to_branch(self, process_xml: str) -> dict:
+        """
+        Определяет номер ветки для каждого элемента (0 = основной поток,
+        1, 2, ... = параллельные ветки от шлюзов), чтобы разнести их по вертикали.
+        """
+        # Парсим sequenceFlow: flow_id -> (sourceRef, targetRef)
+        flow_src_tgt = {}
+        flow_tag = re.compile(
+            r'<sequenceFlow\b[^>]*id="([^"]+)"[^>]*sourceRef="([^"]+)"[^>]*targetRef="([^"]+)"',
+            re.IGNORECASE,
+        )
+        for m in flow_tag.finditer(process_xml):
+            flow_src_tgt[m.group(1)] = (m.group(2), m.group(3))
+        alt_flow = re.compile(
+            r'<sequenceFlow\b[^>]*sourceRef="([^"]+)"[^>]*targetRef="([^"]+)"[^>]*id="([^"]+)"',
+            re.IGNORECASE,
+        )
+        for m in alt_flow.finditer(process_xml):
+            flow_src_tgt[m.group(3)] = (m.group(1), m.group(2))
+
+        # Исходящие потоки по элементу: element_id -> [(flow_id, target_id), ...]
+        outgoing = {}
+        for fid, (src, tgt) in flow_src_tgt.items():
+            outgoing.setdefault(src, []).append((fid, tgt))
+
+        # Шлюзы с несколькими исходящими — корни веток
+        branch_sets = []  # list of set of element_id
+        seen_in_branch = set()
+
+        for elem_id, out_list in outgoing.items():
+            if len(out_list) < 2:
+                continue
+            for flow_id, first_target in out_list:
+                branch_elements = set()
+                stack = [first_target]
+                while stack:
+                    n = stack.pop()
+                    if n in branch_elements:
+                        continue
+                    branch_elements.add(n)
+                    for next_flow_id, next_tgt in outgoing.get(n, []):
+                        stack.append(next_tgt)
+                if branch_elements:
+                    branch_sets.append(branch_elements)
+                    seen_in_branch |= branch_elements
+
+        # element_id -> branch_index (0 = основной поток)
+        element_to_branch = {}
+        for idx, branch in enumerate(branch_sets):
+            for eid in branch:
+                element_to_branch[eid] = idx + 1
+        return element_to_branch
+
+    def _get_gateway_info(self, process_xml: str) -> tuple[set, dict]:
+        """
+        Возвращает (множество id шлюзов, словарь gateway_id -> упорядоченный список flow_id исходящих потоков).
+        Нужно для ортогональной маршрутизации стрелок из шлюза по нотации BPMN.
+        """
+        gateway_tags = re.compile(
+            r"<(?:exclusiveGateway|inclusiveGateway|parallelGateway)\s+id=\"([^\"]+)\"",
+            re.IGNORECASE,
+        )
+        gateway_ids = set()
+        for m in gateway_tags.finditer(process_xml):
+            gateway_ids.add(m.group(1))
+
+        # Порядок исходящих потоков у каждого шлюза (по тегам <outgoing> внутри элемента)
+        gateway_outgoing = {}
+        gate_block = re.compile(
+            r"<(?:exclusiveGateway|inclusiveGateway|parallelGateway)\s+id=\"([^\"]+)\"[^>]*>"
+            r"([\s\S]*?)</(?:exclusiveGateway|inclusiveGateway|parallelGateway)>",
+            re.IGNORECASE,
+        )
+        for m in gate_block.finditer(process_xml):
+            gid = m.group(1)
+            inner = m.group(2)
+            out_refs = re.findall(r"<outgoing>([^<]+)</outgoing>", inner, re.IGNORECASE)
+            gateway_outgoing[gid] = [fid.strip() for fid in out_refs]
+
+        return gateway_ids, gateway_outgoing
 
     def _adjust_bounds(self, bounds_attrs: str, offset_x: float, offset_y: float) -> str:
         """Корректирует координаты в Bounds атрибутах."""

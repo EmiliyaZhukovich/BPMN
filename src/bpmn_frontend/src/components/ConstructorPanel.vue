@@ -28,18 +28,6 @@
             </v-list-item>
           </v-list>
         </v-menu>
-        <v-tooltip text="Добавить пул" location="bottom">
-          <template v-slot:activator="{ props }">
-            <v-btn
-              v-bind="props"
-              icon="mdi-plus-box"
-              variant="text"
-              size="small"
-              color="primary"
-              @click="addPool"
-            />
-          </template>
-        </v-tooltip>
         <v-tooltip text="Отменить" location="bottom">
           <template v-slot:activator="{ props }">
             <v-btn
@@ -83,58 +71,44 @@
     </div>
 
     <div class="panel-content">
-      <div v-if="!hasElements && diagram.pools.length === 0" class="empty-state" role="status" aria-live="polite">
+      <div v-if="!currentPool" class="empty-state" role="status" aria-live="polite">
         <v-icon icon="mdi-chart-timeline-variant" size="64" color="grey-lighten-1" aria-hidden="true" />
-        <p class="empty-state-text">Начните построение BPMN диаграммы</p>
-        <p class="empty-state-hint">Добавьте пул и элементы для создания процесса</p>
+        <p class="empty-state-text">Загрузка конструктора…</p>
       </div>
 
       <div v-else class="process-container">
-        <!-- Pools and Lanes Structure -->
-        <div v-for="(pool, poolIndex) in diagram.pools" :key="pool.id" class="pool-container">
+        <!-- Один пул (диаграмма «Процесс») и дорожки -->
+        <div v-if="currentPool" class="pool-container">
           <div class="pool-header">
             <div class="pool-title-section">
               <v-icon icon="mdi-swim" size="small" class="mr-2" />
               <input
-                v-model="pool.name"
+                v-model="currentPool.name"
                 @input="saveToHistory"
                 class="pool-name-input"
-                :placeholder="pool.isExternal ? 'Внешний участник' : 'Название пула'"
+                placeholder="Название процесса"
               />
-              <v-chip v-if="pool.isExternal" size="x-small" color="secondary" variant="flat" class="ml-2">
-                Внешний
-              </v-chip>
             </div>
             <div class="pool-actions">
               <v-btn
-                v-if="!pool.isExternal"
                 icon="mdi-plus"
                 size="x-small"
                 variant="text"
                 color="primary"
-                @click="addLane(poolIndex)"
+                @click="addLane()"
                 :title="'Добавить дорожку'"
-              />
-              <v-btn
-                v-if="diagram.pools.length > 1"
-                icon="mdi-delete"
-                size="x-small"
-                variant="text"
-                color="error"
-                @click="deletePool(poolIndex)"
-                :title="'Удалить пул'"
               />
             </div>
           </div>
 
           <!-- Lanes -->
-          <div v-if="!pool.isExternal && pool.lanes" class="lanes-container">
+          <div v-if="currentPool.lanes" class="lanes-container">
             <div
-              v-for="(lane, laneIndex) in pool.lanes"
+              v-for="(lane, laneIndex) in currentPool.lanes"
               :key="lane.id"
               class="lane-container"
-              :class="{ 'selected-lane': selectedPoolIndex === poolIndex && selectedLaneIndex === laneIndex }"
-              @click="selectedPoolIndex = poolIndex; selectedLaneIndex = laneIndex"
+              :class="{ 'selected-lane': selectedLaneIndex === laneIndex }"
+              @click="selectedLaneIndex = laneIndex"
             >
               <div class="lane-header">
                 <div class="lane-title-section">
@@ -149,12 +123,12 @@
                 </div>
                 <div class="lane-actions">
                   <v-btn
-                    v-if="pool.lanes.length > 1"
+                    v-if="currentPool.lanes.length > 1"
                     icon="mdi-delete"
                     size="x-small"
                     variant="text"
                     color="error"
-                    @click.stop="deleteLane(poolIndex, laneIndex)"
+                    @click.stop="deleteLane(0, laneIndex)"
                     :title="'Удалить дорожку'"
                   />
                 </div>
@@ -162,27 +136,29 @@
 
               <!-- Elements in lane -->
               <div class="lane-elements">
+                <p v-if="!lane.elements || lane.elements.length === 0" class="lane-empty-hint">
+                  Нажмите «Добавить элемент» ниже, чтобы добавить событие начала, задачу, условие и др.
+                </p>
                 <div
                   v-for="(element, elementIndex) in lane.elements"
                   :key="element.id || elementIndex"
                   class="element-wrapper"
                   :class="{
                     'drag-over': dragOverIndex && typeof dragOverIndex === 'object' &&
-                                dragOverIndex.poolIndex === poolIndex &&
                                 dragOverIndex.laneIndex === laneIndex &&
                                 dragOverIndex.elementIndex === elementIndex
                   }"
                   :draggable="true"
-                  @dragstart="handleDragStart(poolIndex, laneIndex, elementIndex, $event)"
+                  @dragstart="handleDragStart(0, laneIndex, elementIndex, $event)"
                   @dragover.prevent
-                  @drop="handleDrop(poolIndex, laneIndex, elementIndex, $event)"
-                  @dragenter.prevent="handleDragEnter(poolIndex, laneIndex, elementIndex, $event)"
+                  @drop="handleDrop(0, laneIndex, elementIndex, $event)"
+                  @dragenter.prevent="handleDragEnter(0, laneIndex, elementIndex, $event)"
                   @dragleave="handleDragLeave"
                 >
                   <ElementEditor
                     :element="element"
-                    @update="updateElement(poolIndex, laneIndex, elementIndex, $event)"
-                    @delete="deleteElement(poolIndex, laneIndex, elementIndex)"
+                    @update="updateElement(0, laneIndex, elementIndex, $event)"
+                    @delete="deleteElement(0, laneIndex, elementIndex)"
                   />
                   <div class="add-after-section">
                     <v-menu>
@@ -199,19 +175,19 @@
                         </v-btn>
                       </template>
                       <v-list>
-                        <v-list-item @click="addElementAfter(poolIndex, laneIndex, elementIndex, 'task')">
+                        <v-list-item @click="addElementAfter(0, laneIndex, elementIndex, 'task')">
                           <v-list-item-title>
                             <v-icon icon="mdi-checkbox-marked-circle" size="small" class="mr-2" />
                             Задача
                           </v-list-item-title>
                         </v-list-item>
-                        <v-list-item @click="addElementAfter(poolIndex, laneIndex, elementIndex, 'exclusiveGateway')">
+                        <v-list-item @click="addElementAfter(0, laneIndex, elementIndex, 'exclusiveGateway')">
                           <v-list-item-title>
                             <v-icon icon="mdi-source-branch" size="small" class="mr-2" />
                             Условие (Если)
                           </v-list-item-title>
                         </v-list-item>
-                        <v-list-item @click="addElementAfter(poolIndex, laneIndex, elementIndex, 'endEvent')">
+                        <v-list-item @click="addElementAfter(0, laneIndex, elementIndex, 'endEvent')">
                           <v-list-item-title>
                             <v-icon icon="mdi-stop-circle" size="small" class="mr-2" />
                             Событие конца
@@ -238,37 +214,37 @@
                       </v-btn>
                     </template>
                     <v-list>
-                      <v-list-item @click="selectedPoolIndex = poolIndex; selectedLaneIndex = laneIndex; addElement('startEvent')">
+                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('startEvent')">
                         <v-list-item-title>
                           <v-icon icon="mdi-play-circle" size="small" class="mr-2" />
                           Событие начала
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedPoolIndex = poolIndex; selectedLaneIndex = laneIndex; addElement('endEvent')">
+                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('endEvent')">
                         <v-list-item-title>
                           <v-icon icon="mdi-stop-circle" size="small" class="mr-2" />
                           Событие конца
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedPoolIndex = poolIndex; selectedLaneIndex = laneIndex; addElement('task')">
+                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('task')">
                         <v-list-item-title>
                           <v-icon icon="mdi-checkbox-marked-circle" size="small" class="mr-2" />
                           Задача
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedPoolIndex = poolIndex; selectedLaneIndex = laneIndex; addElement('exclusiveGateway')">
+                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('exclusiveGateway')">
                         <v-list-item-title>
                           <v-icon icon="mdi-source-branch" size="small" class="mr-2" />
                           Условие (Если)
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedPoolIndex = poolIndex; selectedLaneIndex = laneIndex; addElement('inclusiveGateway')">
+                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('inclusiveGateway')">
                         <v-list-item-title>
                           <v-icon icon="mdi-source-branch" size="small" class="mr-2" />
                           Множественные условия
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedPoolIndex = poolIndex; selectedLaneIndex = laneIndex; addElement('parallelGateway')">
+                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('parallelGateway')">
                         <v-list-item-title>
                           <v-icon icon="mdi-source-merge" size="small" class="mr-2" />
                           Параллельные процессы
@@ -279,12 +255,6 @@
                 </div>
               </div>
             </div>
-          </div>
-
-          <!-- External pool (no lanes/elements) -->
-          <div v-if="pool.isExternal" class="external-pool-note">
-            <v-icon icon="mdi-information-outline" size="small" class="mr-2" />
-            <span>Внешний участник - элементы добавляются в других пулах</span>
           </div>
         </div>
       </div>
@@ -372,8 +342,6 @@ import { getTemplate, getAllTemplates } from '../utils/templates';
 import {
   createEmptyDiagram,
   migrateToDiagramModel,
-  diagramToFlatProcess,
-  createPool,
   createLane,
   createElement,
   getAllElements,
@@ -392,7 +360,7 @@ export default {
     const process = computed({
       get: () => {
         // Return first lane's elements if only one pool with one lane
-        if (diagram.value.pools.length === 1 && diagram.value.pools[0].lanes.length === 1) {
+        if (diagram.value.pools.length === 1 && diagram.value.pools[0].lanes?.length === 1) {
           return diagram.value.pools[0].lanes[0].elements || [];
         }
         return [];
@@ -412,9 +380,12 @@ export default {
     const draggedIndex = ref(null);
     const dragOverIndex = ref(null);
 
-    // Track selected pool/lane for adding elements
-    const selectedPoolIndex = ref(0);
+    // Один пул (диаграмма «Процесс»); выбранная дорожка для добавления элементов
     const selectedLaneIndex = ref(0);
+
+    const currentPool = computed(() =>
+      diagram.value.pools && diagram.value.pools.length > 0 ? diagram.value.pools[0] : null
+    );
 
     const canUndo = computed(() => historyIndex.value > 0);
     const canRedo = computed(() => historyIndex.value < history.value.length - 1);
@@ -447,10 +418,9 @@ export default {
       { deep: true }
     );
 
-    // Initialize with default pool if empty
     onMounted(() => {
       if (diagram.value.pools.length === 0) {
-        diagram.value.pools.push(createPool('Основной процесс'));
+        diagram.value = createEmptyDiagram();
         saveToHistory();
       }
     });
@@ -470,18 +440,15 @@ export default {
 
     function getCurrentPool() {
       if (diagram.value.pools.length === 0) {
-        diagram.value.pools.push(createPool('Основной процесс'));
+        diagram.value = createEmptyDiagram();
       }
-      if (selectedPoolIndex.value >= diagram.value.pools.length) {
-        selectedPoolIndex.value = 0;
-      }
-      return diagram.value.pools[selectedPoolIndex.value];
+      return diagram.value.pools[0];
     }
 
     function getCurrentLane() {
       const pool = getCurrentPool();
-      if (!pool.isExternal && pool.lanes.length === 0) {
-        pool.lanes.push(createLane('Дорожка 1'));
+      if (!pool.lanes || pool.lanes.length === 0) {
+        pool.lanes = [createLane('Дорожка 1')];
       }
       if (selectedLaneIndex.value >= pool.lanes.length) {
         selectedLaneIndex.value = 0;
@@ -499,32 +466,13 @@ export default {
       saveToHistory();
     }
 
-    function addPool() {
-      diagram.value.pools.push(createPool(`Пул ${diagram.value.pools.length + 1}`));
-      selectedPoolIndex.value = diagram.value.pools.length - 1;
-      selectedLaneIndex.value = 0;
+    function addLane() {
+      const pool = getCurrentPool();
+      if (!pool.lanes) {
+        pool.lanes = [];
+      }
+      pool.lanes.push(createLane(`Дорожка ${pool.lanes.length + 1}`));
       saveToHistory();
-    }
-
-    function addLane(poolIndex) {
-      const pool = diagram.value.pools[poolIndex];
-      if (!pool.isExternal) {
-        if (!pool.lanes) {
-          pool.lanes = [];
-        }
-        pool.lanes.push(createLane(`Дорожка ${pool.lanes.length + 1}`));
-        saveToHistory();
-      }
-    }
-
-    function deletePool(poolIndex) {
-      if (diagram.value.pools.length > 1) {
-        diagram.value.pools.splice(poolIndex, 1);
-        if (selectedPoolIndex.value >= diagram.value.pools.length) {
-          selectedPoolIndex.value = Math.max(0, diagram.value.pools.length - 1);
-        }
-        saveToHistory();
-      }
     }
 
     function deleteLane(poolIndex, laneIndex) {
@@ -577,7 +525,6 @@ export default {
     function clearAll() {
       if (confirm('Вы уверены, что хотите очистить все элементы?')) {
         diagram.value = createEmptyDiagram();
-        diagram.value.pools.push(createPool('Основной процесс'));
         diagramBuilt.value = false;
         saveToHistory();
       }
@@ -655,11 +602,9 @@ export default {
       const template = getTemplate(templateKey);
       if (template) {
         // Check if template is diagram (new format) or process (legacy format)
-        if (template.pools) {
-          // New format - use directly
+        if (template.pools && template.pools.length > 0) {
           diagram.value = template;
         } else {
-          // Legacy format - migrate to diagram model
           diagram.value = migrateToDiagramModel(template);
         }
         diagramBuilt.value = false;
@@ -697,9 +642,7 @@ export default {
 
     // Legacy method for backward compatibility
     function handleDragStartLegacy(index, event) {
-      const pool = getCurrentPool();
-      const lane = getCurrentLane();
-      handleDragStart(selectedPoolIndex.value, selectedLaneIndex.value, index, event);
+      handleDragStart(0, selectedLaneIndex.value, index, event);
     }
 
     function handleDragEnter(poolIndex, laneIndex, elementIndex, event) {
@@ -709,7 +652,7 @@ export default {
 
     // Legacy method
     function handleDragEnterLegacy(index, event) {
-      handleDragEnter(selectedPoolIndex.value, selectedLaneIndex.value, index, event);
+      handleDragEnter(0, selectedLaneIndex.value, index, event);
     }
 
     function handleDragLeave() {
@@ -756,7 +699,7 @@ export default {
 
     // Legacy method
     function handleDropLegacy(dropIndex, event) {
-      handleDrop(selectedPoolIndex.value, selectedLaneIndex.value, dropIndex, event);
+      handleDrop(0, selectedLaneIndex.value, dropIndex, event);
     }
 
     return {
@@ -768,9 +711,7 @@ export default {
       canUndo,
       canRedo,
       addElement,
-      addPool,
       addLane,
-      deletePool,
       deleteLane,
       updateElement: updateElementLegacy,
       deleteElement: deleteElementLegacy,
@@ -792,10 +733,9 @@ export default {
         if (!dragOverIndex.value || typeof dragOverIndex.value === 'number') {
           return dragOverIndex.value;
         }
-        // Convert to number for legacy compatibility
         return dragOverIndex.value.elementIndex;
       }),
-      selectedPoolIndex,
+      currentPool,
       selectedLaneIndex,
       // Expose methods for pool/lane operations
       updateElement,
@@ -1059,13 +999,14 @@ export default {
   min-height: 60px;
 }
 
-.external-pool-note {
-  padding: 16px;
-  display: flex;
-  align-items: center;
+.lane-empty-hint {
+  margin: 0 0 12px 0;
+  padding: 8px 12px;
+  font-size: 0.875rem;
   color: #757575;
-  font-size: 0.85rem;
-  font-style: italic;
+  background: #f5f5f5;
+  border-radius: 6px;
+  border: 1px dashed #e0e0e0;
 }
 </style>
 

@@ -1,15 +1,31 @@
 /**
  * BPMN Diagram Data Model
- * Handles pools, lanes, and elements structure
+ * Диаграмма «Процесс» — один пул с дорожками (lanes) и элементами.
  */
 
 /**
- * Create an empty diagram structure
+ * Create a new pool (один пул на диаграмму «Процесс»)
+ */
+export function createPool(name = 'Основной процесс') {
+  return {
+    id: `pool_${Date.now()}_${Math.random()}`,
+    name,
+    lanes: [
+      {
+        id: `lane_${Date.now()}_${Math.random()}`,
+        name: 'Дорожка 1',
+        elements: [],
+      },
+    ],
+  };
+}
+
+/**
+ * Create an empty diagram structure (один пул по умолчанию)
  */
 export function createEmptyDiagram() {
   return {
-    pools: [],
-    messageFlows: [],
+    pools: [createPool('Основной процесс')],
     associations: [],
     artifacts: [],
   };
@@ -44,7 +60,6 @@ export function migrateToDiagramModel(oldProcess) {
 
   return {
     pools: [defaultPool],
-    messageFlows: [],
     associations: [],
     artifacts: [],
   };
@@ -65,23 +80,6 @@ export function diagramToFlatProcess(diagram) {
 
   // Otherwise return empty array (multi-pool structures can't be flattened)
   return [];
-}
-
-/**
- * Create a new pool
- */
-export function createPool(name = 'Основной процесс') {
-  return {
-    id: `pool_${Date.now()}_${Math.random()}`,
-    name,
-    lanes: [
-      {
-        id: `lane_${Date.now()}_${Math.random()}`,
-        name: 'Дорожка 1',
-        elements: [],
-      },
-    ],
-  };
 }
 
 /**
