@@ -287,6 +287,13 @@ class BpmnLayoutService:
                     sign = 1 if branch_idx % 2 == 0 else -1
                     return sign * 100 * half
 
+                # В какой дорожке сколько веток: смещение по ветке только если в одной дорожке > 1 ветки
+                lane_to_branch_indices: dict = {}
+                for eid, lid in element_to_lane.items():
+                    lane_to_branch_indices.setdefault(lid, set()).add(
+                        element_to_branch.get(eid, 0)
+                    )
+
                 # element_to_lane и lane_bounds_map уже созданы выше из оригинального XML
                 # Карта скорректированных границ элементов (для привязки стрелок к центрам фигур)
                 shape_adjusted_bounds = {}
@@ -315,11 +322,21 @@ class BpmnLayoutService:
 
                     if lane_id and lane_id in lane_bounds_map:
                         lane_bounds = lane_bounds_map[lane_id]
-                        # Центрируем элемент в дорожке по вертикали + смещение по ветке
                         element_height = shape_h
                         lane_center_y = lane_bounds["y"] + lane_bounds["height"] / 2
+                        # Смещение по ветке только если в этой дорожке несколько веток (чтобы не сливались).
+                        # Иначе центрируем в дорожке — стрелки горизонтальны, от центра границ.
                         branch_idx = element_to_branch.get(element_id, 0)
-                        desired_y = lane_center_y - element_height / 2 + branch_y_offset(branch_idx)
+                        branches_in_lane = lane_to_branch_indices.get(lane_id, set())
+                        offset_in_lane = (
+                            branch_y_offset(branch_idx)
+                            if len(branches_in_lane) > 1
+                            else 0.0
+                        )
+                        desired_y = lane_center_y - element_height / 2 + offset_in_lane
+                        min_y = lane_bounds["y"] + 5
+                        max_y = lane_bounds["y"] + lane_bounds["height"] - element_height - 5
+                        desired_y = max(min_y, min(max_y, desired_y))
                         current_x = float(x_match.group(1)) if x_match else 0
                         new_x = current_x + offset_x
                         if element_id:
@@ -442,18 +459,35 @@ class BpmnLayoutService:
                         except ValueError:
                             out_index = 0
                         n_out = len(out_list)
-                        # По нотации BPMN: стрелки выходят из верхней и нижней вершин ромба (center_x, top) и (center_x, bottom)
-                        exit_x = sb["x"] + sb["w"] / 2
-                        if n_out <= 1:
-                            exit_y = sb["y"] + sb["h"] / 2
+                        # Если цель в той же дорожке и справа — упрощённая стрелка только при одной исходящей.
+                        # При нескольких исходящих из шлюза в одну дорожку выходим из вершин ромба (разные Y), иначе ветки сливаются.
+                        source_lane = element_to_lane.get(source_id) if source_id else None
+                        target_lane = element_to_lane.get(target_id) if target_id else None
+                        gateway_right = sb["x"] + sb["w"]
+                        same_lane_right = (
+                            n_out <= 1
+                            and source_lane
+                            and target_lane
+                            and source_lane == target_lane
+                            and last_wp_x > gateway_right
+                        )
+                        if same_lane_right:
+                            waypoints = [
+                                (gateway_right, sb["y"] + sb["h"] / 2),
+                                (last_wp_x, last_wp_y),
+                            ]
                         else:
-                            exit_y = sb["y"] + (out_index / (n_out - 1)) * sb["h"]
-                        # Три точки: вершина ромба → вертикально до уровня цели → горизонтально к цели
-                        waypoints = [
-                            (exit_x, exit_y),
-                            (exit_x, last_wp_y),
-                            (last_wp_x, last_wp_y),
-                        ]
+                            # По нотации BPMN: стрелки выходят из верхней и нижней вершин ромба
+                            exit_x = sb["x"] + sb["w"] / 2
+                            if n_out <= 1:
+                                exit_y = sb["y"] + sb["h"] / 2
+                            else:
+                                exit_y = sb["y"] + (out_index / (n_out - 1)) * sb["h"]
+                            waypoints = [
+                                (exit_x, exit_y),
+                                (exit_x, last_wp_y),
+                                (last_wp_x, last_wp_y),
+                            ]
                         wp_lines = "\n".join(
                             f'      <di:waypoint x="{x}" y="{y}"/>' for x, y in waypoints
                         )

@@ -157,6 +157,8 @@
                 >
                   <ElementEditor
                     :element="element"
+                    :pool="currentPool"
+                    :lanes="currentPool?.lanes || []"
                     @update="updateElement(0, laneIndex, elementIndex, $event)"
                     @delete="deleteElement(0, laneIndex, elementIndex)"
                   />
@@ -214,37 +216,37 @@
                       </v-btn>
                     </template>
                     <v-list>
-                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('startEvent')">
+                      <v-list-item @click="addElementToLane(0, laneIndex, 'startEvent')">
                         <v-list-item-title>
                           <v-icon icon="mdi-play-circle" size="small" class="mr-2" />
                           Событие начала
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('endEvent')">
+                      <v-list-item @click="addElementToLane(0, laneIndex, 'endEvent')">
                         <v-list-item-title>
                           <v-icon icon="mdi-stop-circle" size="small" class="mr-2" />
                           Событие конца
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('task')">
+                      <v-list-item @click="addElementToLane(0, laneIndex, 'task')">
                         <v-list-item-title>
                           <v-icon icon="mdi-checkbox-marked-circle" size="small" class="mr-2" />
                           Задача
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('exclusiveGateway')">
+                      <v-list-item @click="addElementToLane(0, laneIndex, 'exclusiveGateway')">
                         <v-list-item-title>
                           <v-icon icon="mdi-source-branch" size="small" class="mr-2" />
                           Условие (Если)
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('inclusiveGateway')">
+                      <v-list-item @click="addElementToLane(0, laneIndex, 'inclusiveGateway')">
                         <v-list-item-title>
                           <v-icon icon="mdi-source-branch" size="small" class="mr-2" />
                           Множественные условия
                         </v-list-item-title>
                       </v-list-item>
-                      <v-list-item @click="selectedLaneIndex = laneIndex; addElement('parallelGateway')">
+                      <v-list-item @click="addElementToLane(0, laneIndex, 'parallelGateway')">
                         <v-list-item-title>
                           <v-icon icon="mdi-source-merge" size="small" class="mr-2" />
                           Параллельные процессы
@@ -335,7 +337,7 @@
 </template>
 
 <script>
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, provide } from 'vue';
 import ElementEditor from './ElementEditor.vue';
 import { generateBpmnXml, validateProcess } from '../utils/bpmnGenerator';
 import { getTemplate, getAllTemplates } from '../utils/templates';
@@ -382,9 +384,26 @@ export default {
 
     // Один пул (диаграмма «Процесс»); выбранная дорожка для добавления элементов
     const selectedLaneIndex = ref(0);
+    // Счётчик, чтобы выпадающий список дорожек в ElementEditor обновлялся при add/delete lane (ref не меняется при push)
+    const lanesVersion = ref(0);
 
     const currentPool = computed(() =>
       diagram.value.pools && diagram.value.pools.length > 0 ? diagram.value.pools[0] : null
+    );
+
+    // Геттер дорожек — дочерние компоненты вызывают его и получают актуальный список (обход проблем inject ref)
+    provide('getLanes', () => {
+      const pool = diagram.value?.pools?.[0];
+      return pool && Array.isArray(pool.lanes) ? pool.lanes : [];
+    });
+    provide('diagram', diagram);
+    provide(
+      'poolLanes',
+      computed(() => {
+        lanesVersion.value; // зависимость: при изменении списка дорожек инкрементируем lanesVersion
+        const lanes = currentPool.value && currentPool.value.lanes ? currentPool.value.lanes : [];
+        return lanes.length ? [...lanes] : []; // копия, чтобы дочерний computed видел обновления
+      })
     );
 
     const canUndo = computed(() => historyIndex.value > 0);
@@ -466,12 +485,25 @@ export default {
       saveToHistory();
     }
 
+    /** Добавить элемент в конкретную дорожку (для меню «Добавить элемент» — без зависимости от selectedLaneIndex) */
+    function addElementToLane(poolIndex, laneIndex, type) {
+      const pool = diagram.value.pools[poolIndex];
+      if (!pool?.lanes || laneIndex < 0 || laneIndex >= pool.lanes.length) return;
+      const lane = pool.lanes[laneIndex];
+      if (!lane.elements) lane.elements = [];
+      const element = createElement(type, '');
+      lane.elements.push(element);
+      selectedLaneIndex.value = laneIndex;
+      saveToHistory();
+    }
+
     function addLane() {
       const pool = getCurrentPool();
       if (!pool.lanes) {
         pool.lanes = [];
       }
       pool.lanes.push(createLane(`Дорожка ${pool.lanes.length + 1}`));
+      lanesVersion.value++;
       saveToHistory();
     }
 
@@ -479,6 +511,7 @@ export default {
       const pool = diagram.value.pools[poolIndex];
       if (pool.lanes.length > 1) {
         pool.lanes.splice(laneIndex, 1);
+        lanesVersion.value++;
         if (selectedLaneIndex.value >= pool.lanes.length) {
           selectedLaneIndex.value = Math.max(0, pool.lanes.length - 1);
         }
@@ -711,6 +744,7 @@ export default {
       canUndo,
       canRedo,
       addElement,
+      addElementToLane,
       addLane,
       deleteLane,
       updateElement: updateElementLegacy,

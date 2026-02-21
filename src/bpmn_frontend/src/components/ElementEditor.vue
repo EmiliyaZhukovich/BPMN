@@ -52,7 +52,7 @@
     <div v-if="isGateway && expanded" class="gateway-content">
       <div class="branches-container">
         <div
-          v-for="(branch, branchIndex) in element.branches"
+          v-for="(branch, branchIndex) in (element.branches || [])"
           :key="branchIndex"
           class="branch-item"
         >
@@ -65,6 +65,25 @@
               class="branch-condition-input"
               aria-label="Branch condition"
             />
+            <div class="branch-lane-row">
+              <span class="branch-lane-label">Дорожка:</span>
+              <v-select
+                :model-value="branch.laneId ? String(branch.laneId) : '__same_lane__'"
+                :items="lanesForBranch"
+                item-title="title"
+                item-value="value"
+                density="compact"
+                hide-details
+                class="branch-lane-select lane-v-select"
+                min-width="200"
+                no-data-text="Нет дорожек"
+                @update:model-value="updateBranchLane(branchIndex, $event)"
+              >
+                <template #selection="{ item }">
+                  <span>{{ (!branch.laneId || String(branch.laneId) === '__same_lane__') ? 'Выберите дорожку' : ((item?.raw?.title ?? item?.title) || getLaneTitle(branch.laneId)) }}</span>
+                </template>
+              </v-select>
+            </div>
             <v-checkbox
               v-if="element.type === 'inclusiveGateway'"
               v-model="branch.isDefault"
@@ -84,10 +103,12 @@
           </div>
           <div class="branch-path">
             <ElementEditor
-              v-for="(pathElement, pathIndex) in branch.path"
+              v-for="(pathElement, pathIndex) in (branch.path || [])"
               :key="`branch-${branchIndex}-path-${pathIndex}-${pathElement.id || pathIndex}`"
               :element="pathElement"
               :is-nested="true"
+              :pool="pool"
+              :lanes="lanes"
               @update="handlePathUpdate(branchIndex, pathIndex, $event)"
               @delete="deletePathElement(branchIndex, pathIndex)"
             />
@@ -155,7 +176,7 @@
 </template>
 
 <script>
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, inject } from 'vue';
 
 export default {
   name: 'ElementEditor',
@@ -168,11 +189,24 @@ export default {
       type: Boolean,
       default: false,
     },
+    /** Список дорожек пула (для выбора дорожки ветки шлюза) */
+    lanes: {
+      type: Array,
+      default: () => [],
+    },
+    /** Пул (для реактивного чтения lanes; приоритетнее чем lanes) */
+    pool: {
+      type: Object,
+      default: null,
+    },
   },
   emits: ['update', 'delete'],
   setup(props, { emit }) {
     const expanded = ref(true);
     const localLabel = ref(props.element.label || '');
+    const poolLanes = inject('poolLanes', ref([]));
+    const diagram = inject('diagram', ref(null));
+    const getLanes = inject('getLanes', () => []);
 
     const isGateway = computed(() => {
       return (
@@ -255,6 +289,58 @@ export default {
         updatedElement.branches[branchIndex].condition = value;
         emit('update', updatedElement);
       }
+    }
+
+    /** Дорожки для выпадающего списка. Используем inject poolLanes первым (реактивный computed), чтобы список обновлялся при добавлении дорожек. */
+    const lanesForBranch = computed(() => {
+      const fromInject = poolLanes.value != null && Array.isArray(poolLanes.value) ? poolLanes.value : [];
+      const fromProps = Array.isArray(props.lanes) ? props.lanes : [];
+      const fromPool =
+        props.pool && Array.isArray(props.pool.lanes) ? props.pool.lanes : [];
+      const fromGetLanes = (() => {
+        try {
+          const lanes = getLanes();
+          return Array.isArray(lanes) ? lanes : [];
+        } catch {
+          return [];
+        }
+      })();
+      const d = diagram.value;
+      const fromDiagram =
+        d && d.pools && d.pools[0] && Array.isArray(d.pools[0].lanes) ? d.pools[0].lanes : [];
+      const list =
+        fromInject.length > 0
+          ? fromInject
+          : fromProps.length > 0
+            ? fromProps
+            : fromPool.length > 0
+              ? fromPool
+              : fromGetLanes.length > 0
+                ? fromGetLanes
+                : fromDiagram.length > 0
+                  ? fromDiagram
+                  : [];
+      const laneItems = (list || [])
+        .filter((l) => l && (String(l.id ?? l.value ?? '') !== ''))
+        .map((l) => ({
+          title: String(l.name ?? l.title ?? l.id ?? l.value ?? ''),
+          value: String(l.id ?? l.value ?? ''),
+        }));
+      return laneItems;
+    });
+
+    function updateBranchLane(branchIndex, laneId) {
+      if (!props.element.branches || !props.element.branches[branchIndex]) return;
+      const updatedElement = JSON.parse(JSON.stringify(props.element));
+      const normalized = (laneId && String(laneId).trim()) || '';
+      updatedElement.branches[branchIndex].laneId = (normalized && normalized !== '__same_lane__') ? normalized : undefined;
+      emit('update', updatedElement);
+    }
+
+    function getLaneTitle(laneId) {
+      const list = lanesForBranch.value;
+      const found = list.find((opt) => opt.value === String(laneId));
+      return found?.title ?? String(laneId);
     }
 
     function addBranch() {
@@ -439,6 +525,9 @@ export default {
       updateTaskType,
       updateBranch,
       updateBranchCondition,
+      updateBranchLane,
+      lanesForBranch,
+      getLaneTitle,
       addBranch,
       deleteBranch,
       addPathElement,
@@ -581,6 +670,7 @@ export default {
 
 .branch-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
@@ -599,6 +689,39 @@ export default {
 
 .branch-condition-input:focus {
   border-color: #2196f3;
+}
+
+.branch-lane-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 200px;
+  max-width: 100%;
+}
+.branch-lane-label {
+  font-size: 0.8rem;
+  color: #616161;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.branch-lane-select {
+  flex: 1;
+  min-width: 140px;
+  max-width: 240px;
+}
+
+.lane-v-select {
+  font-size: 0.9rem;
+}
+
+/* Выпадающий список дорожек — минимальная ширина задаётся через menu-props; доп. стили для пунктов */
+.lane-v-select :deep(.v-list-item) {
+  min-height: 40px;
+  padding: 8px 16px;
+}
+.lane-v-select :deep(.v-list-item-title) {
+  white-space: normal;
 }
 
 .branch-path {
