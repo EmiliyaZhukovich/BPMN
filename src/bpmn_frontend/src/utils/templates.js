@@ -11,12 +11,12 @@ export const templates = {
       {
         id: 'start_1',
         type: 'startEvent',
-        label: 'Receiving Application',
+        label: 'Приём заявления',
       },
       {
         id: 'task_1',
         type: 'task',
-        label: 'Check Data Correctness',
+        label: 'Проверьте правильность данных',
       },
       {
         id: 'gateway_1',
@@ -24,23 +24,23 @@ export const templates = {
         label: '',
         branches: [
           {
-            condition: 'Data correct',
+            condition: 'Данные корректны',
             path: [
               {
                 id: 'task_2',
                 type: 'task',
-                label: 'Register Application',
+                label: 'Зарегистрировать заявку',
               },
             ],
             isDefault: false,
           },
           {
-            condition: 'Data incorrect',
+            condition: 'Данные некорректны',
             path: [
               {
                 id: 'task_3',
                 type: 'task',
-                label: 'Request Clarifications',
+                label: 'Запрос на проверку информации',
               },
             ],
             isDefault: false,
@@ -50,7 +50,7 @@ export const templates = {
       {
         id: 'end_1',
         type: 'endEvent',
-        label: 'Application Registered / Denied',
+        label: 'Заявка зарегистрирована / Отклонена',
       },
     ],
   },
@@ -62,12 +62,12 @@ export const templates = {
       {
         id: 'start_1',
         type: 'startEvent',
-        label: 'Receiving Order',
+        label: 'Отправка заказа',
       },
       {
         id: 'task_1',
         type: 'task',
-        label: 'Check Payment and Stock',
+        label: 'Проверка оплаты и наличия товара',
       },
       {
         id: 'gateway_1',
@@ -75,34 +75,34 @@ export const templates = {
         label: '',
         branches: [
           {
-            condition: 'Payment confirmed AND Item in stock',
+            condition: 'Оплата подтверждена И товар есть в наличии',
             path: [
               {
                 id: 'task_2',
                 type: 'task',
-                label: 'Arrange Delivery',
+                label: 'Организовать доставку',
               },
             ],
             isDefault: false,
           },
           {
-            condition: 'Payment confirmed AND Item out of stock',
+            condition: 'Оплата подтверждена, но товар отсутствует на складе.',
             path: [
               {
                 id: 'task_3',
                 type: 'task',
-                label: 'Notify Client',
+                label: 'Уведомить клиента',
               },
             ],
             isDefault: false,
           },
           {
-            condition: 'Payment not confirmed',
+            condition: 'Платеж не подтвержден',
             path: [
               {
                 id: 'task_4',
                 type: 'task',
-                label: 'Cancel Order',
+                label: 'Отменить заказ',
               },
             ],
             isDefault: false,
@@ -112,7 +112,7 @@ export const templates = {
       {
         id: 'end_1',
         type: 'endEvent',
-        label: 'Order Processed / Canceled',
+        label: 'Заказ обработан / Отменен',
       },
     ],
   },
@@ -124,7 +124,7 @@ export const templates = {
       {
         id: 'start_1',
         type: 'startEvent',
-        label: 'Project Launch',
+        label: 'Запуск проекта',
       },
       {
         id: 'gateway_1',
@@ -137,7 +137,7 @@ export const templates = {
               {
                 id: 'task_1',
                 type: 'task',
-                label: 'Prepare Technical Specification',
+                label: 'Подготовка технической спецификации',
               },
             ],
             isDefault: false,
@@ -148,7 +148,7 @@ export const templates = {
               {
                 id: 'task_2',
                 type: 'task',
-                label: 'Form Budget',
+                label: 'Форма бюджета',
               },
             ],
             isDefault: false,
@@ -161,12 +161,12 @@ export const templates = {
         label: '',
         branches: [
           {
-            condition: 'Spec ready AND Budget approved',
+            condition: 'Технические характеристики готовы, и бюджет утвержден.',
             path: [
               {
                 id: 'task_3',
                 type: 'task',
-                label: 'Start Implementation',
+                label: 'Начало реализации',
               },
             ],
             isDefault: false,
@@ -177,7 +177,7 @@ export const templates = {
               {
                 id: 'task_4',
                 type: 'task',
-                label: 'Rework',
+                label: 'Переработка',
               },
             ],
             isDefault: false,
@@ -187,7 +187,7 @@ export const templates = {
       {
         id: 'end_1',
         type: 'endEvent',
-        label: 'Project Launched',
+        label: 'Проект запущен',
       },
     ],
   },
@@ -199,12 +199,12 @@ export const templates = {
       {
         id: 'start_1',
         type: 'startEvent',
-        label: 'Product Quality Check',
+        label: 'Проверка качества продукции',
       },
       {
         id: 'task_1',
         type: 'task',
-        label: 'Testing',
+        label: 'Тестирование',
       },
       {
         id: 'gateway_1',
@@ -212,28 +212,28 @@ export const templates = {
         label: '',
         branches: [
           {
-            condition: 'Test passed',
+            condition: 'Тест пройден',
             path: [
               {
                 id: 'task_2',
                 type: 'task',
-                label: 'Packaging',
+                label: 'Упаковка',
               },
             ],
             isDefault: false,
           },
           {
-            condition: 'Test failed',
+            condition: 'Тест не пройден',
             path: [
               {
                 id: 'task_3',
                 type: 'task',
-                label: 'Rework',
+                label: 'Переработка',
               },
               {
                 id: 'task_4',
                 type: 'task',
-                label: 'Retest',
+                label: 'Повторное тестирование',
               },
             ],
             isDefault: false,
@@ -243,7 +243,7 @@ export const templates = {
       {
         id: 'end_1',
         type: 'endEvent',
-        label: 'Product Ready for Sale',
+        label: 'Товар готов к продаже',
       },
     ],
   },
@@ -255,12 +255,12 @@ export const templates = {
       {
         id: 'start_1',
         type: 'startEvent',
-        label: 'User Online Registration',
+        label: 'Онлайн-регистрация пользователя',
       },
       {
         id: 'task_1',
         type: 'task',
-        label: 'Check Email',
+        label: 'Проверьте электронную почту',
       },
       {
         id: 'gateway_1',
@@ -268,7 +268,7 @@ export const templates = {
         label: '',
         branches: [
           {
-            condition: 'Email confirmed',
+            condition: 'Электронное письмо подтверждено.',
             path: [
               {
                 id: 'gateway_2',
@@ -276,23 +276,23 @@ export const templates = {
                 label: '',
                 branches: [
                   {
-                    condition: 'Age ≥ 18',
+                    condition: 'Возраст ≥ 18',
                     path: [
                       {
                         id: 'task_2',
                         type: 'task',
-                        label: 'Create Account',
+                        label: 'Зарегистрироваться',
                       },
                     ],
                     isDefault: false,
                   },
                   {
-                    condition: 'Age < 18',
+                    condition: 'Возраст < 18',
                     path: [
                       {
                         id: 'task_3',
                         type: 'task',
-                        label: 'Deny Registration',
+                        label: 'Отказать в регистрации',
                       },
                     ],
                     isDefault: false,
@@ -303,12 +303,12 @@ export const templates = {
             isDefault: false,
           },
           {
-            condition: 'Email not confirmed',
+            condition: 'Адрес электронной почты не подтвержден',
             path: [
               {
                 id: 'task_4',
                 type: 'task',
-                label: 'Reminder',
+                label: 'Напоминание',
               },
             ],
             isDefault: false,
@@ -318,74 +318,11 @@ export const templates = {
       {
         id: 'end_1',
         type: 'endEvent',
-        label: 'Registration Complete / Denied',
+        label: 'Регистрация завершена / Отклонено',
       },
     ],
   },
 
-  withPools: {
-    name: 'Процесс с пулами',
-    description: 'Пример процесса с несколькими пулами и дорожками',
-    diagram: {
-      pools: [
-        {
-          id: 'pool_1',
-          name: 'Компания',
-          isExternal: false,
-          isCollapsed: false,
-          lanes: [
-            {
-              id: 'lane_1',
-              name: 'Отдел продаж',
-              elements: [
-                {
-                  id: 'start_1',
-                  type: 'startEvent',
-                  label: 'Получение заявки',
-                },
-                {
-                  id: 'task_1',
-                  type: 'task',
-                  label: 'Обработка заявки',
-                },
-                {
-                  id: 'end_1',
-                  type: 'endEvent',
-                  label: 'Заявка обработана',
-                },
-              ],
-            },
-            {
-              id: 'lane_2',
-              name: 'Отдел доставки',
-              elements: [
-                {
-                  id: 'task_2',
-                  type: 'task',
-                  label: 'Подготовка к доставке',
-                },
-                {
-                  id: 'task_3',
-                  type: 'task',
-                  label: 'Доставка товара',
-                },
-              ],
-            },
-          ],
-        },
-        {
-          id: 'pool_2',
-          name: 'Клиент',
-          isExternal: true,
-          isCollapsed: false,
-          lanes: [],
-        },
-      ],
-      messageFlows: [],
-      associations: [],
-      artifacts: [],
-    },
-  },
 };
 
 export function getTemplate(name) {

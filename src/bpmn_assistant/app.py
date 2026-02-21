@@ -2,9 +2,10 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 
-from bpmn_assistant.api.requests import BpmnToJsonRequest
+from bpmn_assistant.api.requests import BpmnToJsonRequest, BpmnLayoutRequest
 from bpmn_assistant.core.decorators import handle_exceptions
 from bpmn_assistant.services.bpmn_json_generator import BpmnJsonGenerator
+from bpmn_assistant.services.bpmn_layout_service import BpmnLayoutService
 
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
@@ -41,3 +42,15 @@ async def _bpmn_to_json(request: BpmnToJsonRequest) -> JSONResponse:
     bpmn_json_generator = BpmnJsonGenerator()
     result = bpmn_json_generator.create_bpmn_json(request.bpmn_xml)
     return JSONResponse(content=result) #Возвращается уже сформированный JSON
+
+
+@app.post("/process-bpmn")
+@handle_exceptions
+async def _process_bpmn(request: BpmnLayoutRequest) -> JSONResponse:
+    """
+    Обрабатывает BPMN XML и возвращает XML с автоматической расстановкой элементов.
+    Эндпоинт совместим с bpmn_layout_server для миграции.
+    """
+    bpmn_layout_service = BpmnLayoutService()
+    layouted_xml = bpmn_layout_service.process_bpmn(request.bpmnXml)
+    return JSONResponse(content={"layoutedXml": layouted_xml})

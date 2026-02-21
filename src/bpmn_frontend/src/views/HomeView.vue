@@ -48,6 +48,11 @@ export default {
       container: '#canvas',
     });
 
+    // Скрываем логотип BPMN.io после инициализации
+    this.$nextTick(() => {
+      this.hideBpmnLogo();
+    });
+
     // this.bpmnViewer
     //   .importXML(initialDiagram)
     //   .then((result) => {
@@ -65,6 +70,31 @@ export default {
     }
   },
   methods: {
+    hideBpmnLogo() {
+      // Скрываем логотип BPMN.io различными способами
+      const selectors = [
+        '.bjs-powered-by',
+        '.bjs-powered-by-bpmn',
+        '[class*="powered-by"]',
+        'a[href*="bpmn.io"]',
+        'a[href*="bpmn-io"]',
+      ];
+
+      selectors.forEach((selector) => {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach((el) => {
+          el.style.display = 'none';
+        });
+      });
+
+      // Также ищем по тексту
+      const allLinks = document.querySelectorAll('a');
+      allLinks.forEach((link) => {
+        if (link.textContent && link.textContent.includes('bpmn.io')) {
+          link.style.display = 'none';
+        }
+      });
+    },
     showSnackbar(text, color = 'success') {
       this.snackbar.text = text;
       this.snackbar.color = color;
@@ -199,6 +229,8 @@ export default {
         const { warnings } = await this.bpmnViewer.importXML(xmlToImport);
         console.log('BPMN diagram imported successfully', warnings);
         this.bpmnViewer.get('canvas').zoom('fit-viewport');
+        // Скрываем логотип после импорта
+        this.hideBpmnLogo();
         this.showSnackbar('Диаграмма построена успешно', 'success');
       } catch (error) {
         console.error('Error handling BPMN XML:', error);
@@ -277,5 +309,20 @@ export default {
   .constructor-container {
     flex: 0 0 500px;
   }
+}
+</style>
+
+<style>
+/* Скрываем логотип BPMN.io */
+.bjs-powered-by,
+.bjs-powered-by-bpmn,
+[class*="powered-by"] {
+  display: none !important;
+}
+
+/* Альтернативные селекторы для логотипа */
+a[href*="bpmn.io"],
+a[href*="bpmn-io"] {
+  display: none !important;
 }
 </style>

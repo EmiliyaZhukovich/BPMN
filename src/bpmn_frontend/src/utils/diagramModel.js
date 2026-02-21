@@ -33,8 +33,6 @@ export function migrateToDiagramModel(oldProcess) {
   const defaultPool = {
     id: `pool_${Date.now()}`,
     name: 'Основной процесс',
-    isExternal: false,
-    isCollapsed: false,
     lanes: [
       {
         id: `lane_${Date.now()}`,
@@ -72,12 +70,10 @@ export function diagramToFlatProcess(diagram) {
 /**
  * Create a new pool
  */
-export function createPool(name = 'Новый пул') {
+export function createPool(name = 'Основной процесс') {
   return {
     id: `pool_${Date.now()}_${Math.random()}`,
     name,
-    isExternal: false,
-    isCollapsed: false,
     lanes: [
       {
         id: `lane_${Date.now()}_${Math.random()}`,
@@ -136,7 +132,7 @@ export function getAllElements(diagram) {
   if (!diagram || !diagram.pools) return elements;
 
   diagram.pools.forEach((pool) => {
-    if (!pool.isExternal && pool.lanes) {
+    if (pool.lanes) {
       pool.lanes.forEach((lane) => {
         if (lane.elements) {
           elements.push(...lane.elements);
