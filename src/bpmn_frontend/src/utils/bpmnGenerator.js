@@ -123,7 +123,10 @@ export function generateBpmnXml(diagramOrProcess) {
       } else if (element.type === 'parallelGateway') {
         handleParallelGateway(element, transformedElement, nextElementId, transformedElements);
       } else if (nextElementId && element.type !== 'endEvent') {
-        addFlow(elemId, nextElementId);
+        // Если задан явный переход (nextElementId) — не добавляем переход «следующий в дорожке»; он будет добавлен в проходе cross-lane
+        if (!element.nextElementId) {
+          addFlow(elemId, nextElementId);
+        }
       } else if (nextElementId && element.type === 'endEvent') {
         // End event with next element - connect to existing end event if duplicate
         const normalizedLabel = (element.label || '').trim().toLowerCase();
@@ -841,15 +844,6 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
           fillBranchIndexMap(currentLaneData.elements, lane.id);
         }
 
-        const branchIndicesInLane = new Set(
-          (laneElements || []).map((id) => elementToBranchIndex?.get(id)).filter((v) => v !== undefined)
-        );
-        const sameLaneMultipleBranches = branchIndicesInLane.size >= 2;
-        const sortedBranchIndices = [...branchIndicesInLane].sort((a, b) => a - b);
-        const nBranchRows = sortedBranchIndices.length;
-
-        const laneIdSet = new Set(laneElements);
-
         laneElements.forEach((elemId, idx) => {
           laneIdByElement.set(elemId, lane.id);
           const x = laneX + 100 + idx * 200;
@@ -1110,19 +1104,24 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       const tgtLane = laneIdByElement.get(flow.targetRef);
       const crossLane = srcLane && tgtLane && srcLane !== tgtLane;
       if (crossLane) {
-        // Переход между дорожками: ортогональная ломаная (вертикаль — горизонталь — вертикаль), без диагонали
+        // Переход между дорожками: ортогональная ломаная. Источник выше цели — стрелка вниз (низ источника → верх цели), иначе вверх (верх источника → низ цели).
+        const srcTopY = src.y - srcSize.h / 2;
         const srcBottomY = src.y + srcSize.h / 2;
         const tgtTopY = tgt.y - tgtSize.h / 2;
+        const tgtBottomY = tgt.y + tgtSize.h / 2;
+        const flowDown = src.y < tgt.y;
+        const startY = flowDown ? srcBottomY : srcTopY;
+        const endY = flowDown ? tgtTopY : tgtBottomY;
         const waypoints =
           Math.abs(src.x - tgt.x) < 1
             ? [
-                { x: src.x, y: srcBottomY },
-                { x: src.x, y: tgtTopY },
+                { x: src.x, y: startY },
+                { x: src.x, y: endY },
               ]
             : [
-                { x: src.x, y: srcBottomY },
-                { x: src.x, y: tgtTopY },
-                { x: tgt.x, y: tgtTopY },
+                { x: src.x, y: startY },
+                { x: src.x, y: endY },
+                { x: tgt.x, y: endY },
               ];
         pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
       } else {

@@ -538,10 +538,23 @@ class BpmnLayoutService:
                         and last_wp_x is not None
                     ):
                         # Переход между дорожками: вертикальная линия (без диагонали)
+                        # Источник выше цели → стрелка вниз (от низа источника к верху цели)
+                        # Источник ниже цели → стрелка вверх (от верха источника к низу цели)
                         center_x = sb["x"] + sb["w"] / 2
-                        src_bottom = sb["y"] + sb["h"]
-                        tgt_top = tb["y"]
-                        waypoints = [(center_x, src_bottom), (center_x, tgt_top)]
+                        src_center_y = sb["y"] + sb["h"] / 2
+                        tgt_center_y = tb["y"] + tb["h"] / 2
+                        if src_center_y < tgt_center_y:
+                            # поток вниз
+                            waypoints = [
+                                (center_x, sb["y"] + sb["h"]),
+                                (center_x, tb["y"]),
+                            ]
+                        else:
+                            # поток вверх (нижняя дорожка → верхняя)
+                            waypoints = [
+                                (center_x, sb["y"]),
+                                (center_x, tb["y"] + tb["h"]),
+                            ]
                         wp_lines = "\n".join(
                             f'      <di:waypoint x="{x}" y="{y}"/>' for x, y in waypoints
                         )
