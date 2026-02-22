@@ -844,6 +844,14 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
           fillBranchIndexMap(currentLaneData.elements, lane.id);
         }
 
+        const branchIndicesInLane = new Set(
+          (laneElements || []).map((id) => elementToBranchIndex?.get(id)).filter((v) => v !== undefined)
+        );
+        const sameLaneMultipleBranches = branchIndicesInLane.size >= 2;
+        const sortedBranchIndices = [...branchIndicesInLane].sort((a, b) => a - b);
+        const nBranchRows = sortedBranchIndices.length;
+        const laneIdSet = new Set(laneElements);
+
         laneElements.forEach((elemId, idx) => {
           laneIdByElement.set(elemId, lane.id);
           const x = laneX + 100 + idx * 200;
