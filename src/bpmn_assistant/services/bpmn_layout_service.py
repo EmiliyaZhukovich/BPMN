@@ -298,7 +298,7 @@ class BpmnLayoutService:
                 # Карта скорректированных границ элементов (для привязки стрелок к центрам фигур)
                 shape_adjusted_bounds = {}
 
-                # Применяем offset к shapes и корректируем Y-координаты по дорожкам
+                # Первый проход: заполняем shape_adjusted_bounds (offset + Y по дорожкам)
                 for sxml in shapes_for_proc:
                     # Извлекаем element ID
                     be_match = re.search(r'bpmnElement="([^"]+)"', sxml, re.IGNORECASE)
@@ -346,42 +346,6 @@ class BpmnLayoutService:
                                 "w": shape_w,
                                 "h": shape_h,
                             }
-
-                        # Заменяем координаты - используем простую замену через regex
-                        # Сначала заменяем x, потом y (они могут быть в любом порядке)
-                        adjusted = sxml
-                        # Заменяем x координату в Bounds (только первое вхождение)
-                        adjusted = re.sub(
-                            r'(<dc:Bounds[^>]*\s)x="([0-9+.\-eE]+)"',
-                            rf'\1x="{new_x}"',
-                            adjusted,
-                            count=1,
-                            flags=re.IGNORECASE,
-                        )
-                        # Заменяем y координату в Bounds (только первое вхождение)
-                        adjusted = re.sub(
-                            r'(<dc:Bounds[^>]*\s)y="([0-9+.\-eE]+)"',
-                            rf'\1y="{desired_y}"',
-                            adjusted,
-                            count=1,
-                            flags=re.IGNORECASE,
-                        )
-                        # Если замена не сработала (возможно формат другой), пробуем без группы
-                        if adjusted == sxml:
-                            adjusted = re.sub(
-                                r'x="([0-9+.\-eE]+)"',
-                                f'x="{new_x}"',
-                                sxml,
-                                count=1,
-                                flags=re.IGNORECASE,
-                            )
-                            adjusted = re.sub(
-                                r'y="([0-9+.\-eE]+)"',
-                                f'y="{desired_y}"',
-                                adjusted,
-                                count=1,
-                                flags=re.IGNORECASE,
-                            )
                     else:
                         # Если нет информации о дорожке, используем стандартный offset + смещение по ветке
                         current_x = float(x_match.group(1)) if x_match else 0
@@ -395,10 +359,76 @@ class BpmnLayoutService:
                                 "w": shape_w,
                                 "h": shape_h,
                             }
+
+                # Выравнивание по X: цель cross-lane перехода под источником (одна колонка)
+                flow_ref_re = re.compile(
+                    r'<sequenceFlow[^>]*sourceRef="([^"]+)"[^>]*targetRef="([^"]+)"',
+                    re.IGNORECASE,
+                )
+                flow_ref_re2 = re.compile(
+                    r'<sequenceFlow[^>]*targetRef="([^"]+)"[^>]*sourceRef="([^"]+)"',
+                    re.IGNORECASE,
+                )
+                flow_pairs = []
+                for m in flow_ref_re.finditer(proc):
+                    flow_pairs.append((m.group(1), m.group(2)))
+                for m in flow_ref_re2.finditer(proc):
+                    flow_pairs.append((m.group(2), m.group(1)))
+                for src_id, tgt_id in flow_pairs:
+                    # Не сдвигаем цель по X, если источник — шлюз: раскладка веток уже задана layout'ом
+                    if src_id in gateway_ids:
+                        continue
+                    src_lane = element_to_lane.get(src_id)
+                    tgt_lane = element_to_lane.get(tgt_id)
+                    if (
+                        src_lane is not None
+                        and tgt_lane is not None
+                        and src_lane != tgt_lane
+                        and src_id in shape_adjusted_bounds
+                        and tgt_id in shape_adjusted_bounds
+                    ):
+                        sb = shape_adjusted_bounds[src_id]
+                        tb = shape_adjusted_bounds[tgt_id]
+                        center_x = sb["x"] + sb["w"] / 2
+                        shape_adjusted_bounds[tgt_id]["x"] = center_x - tb["w"] / 2
+
+                # Второй проход: применяем bounds к XML и собираем shapes
+                for sxml in shapes_for_proc:
+                    be_match = re.search(r'bpmnElement="([^"]+)"', sxml, re.IGNORECASE)
+                    element_id = be_match.group(1) if be_match else None
+                    b = shape_adjusted_bounds.get(element_id) if element_id else None
+                    if not b:
+                        collected_shapes.append(sxml)
+                        continue
+                    new_x, desired_y = b["x"], b["y"]
+                    shape_w, shape_h = b["w"], b["h"]
+                    adjusted = sxml
+                    adjusted = re.sub(
+                        r'(<dc:Bounds[^>]*\s)x="([0-9+.\-eE]+)"',
+                        rf'\1x="{new_x}"',
+                        adjusted,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+                    adjusted = re.sub(
+                        r'(<dc:Bounds[^>]*\s)y="([0-9+.\-eE]+)"',
+                        rf'\1y="{desired_y}"',
+                        adjusted,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+                    if adjusted == sxml:
                         adjusted = re.sub(
-                            r'<dc:Bounds([^>]*)>',
-                            lambda m: f'<dc:Bounds x="{current_x + offset_x}" y="{adj_y}" width="{shape_w}" height="{shape_h}" />',
+                            r'x="([0-9+.\-eE]+)"',
+                            f'x="{new_x}"',
                             sxml,
+                            count=1,
+                            flags=re.IGNORECASE,
+                        )
+                        adjusted = re.sub(
+                            r'y="([0-9+.\-eE]+)"',
+                            f'y="{desired_y}"',
+                            adjusted,
                             count=1,
                             flags=re.IGNORECASE,
                         )
@@ -445,6 +475,9 @@ class BpmnLayoutService:
                     waypoint_matches = list(waypoint_pattern.finditer(exml))
                     waypoint_total = len(waypoint_matches)
 
+                    source_lane = element_to_lane.get(source_id) if source_id else None
+                    target_lane = element_to_lane.get(target_id) if target_id else None
+
                     # Ортогональная маршрутизация для стрелок из шлюза (нотация BPMN)
                     is_from_gateway = (
                         source_id in gateway_ids
@@ -461,8 +494,6 @@ class BpmnLayoutService:
                         n_out = len(out_list)
                         # Если цель в той же дорожке и справа — упрощённая стрелка только при одной исходящей.
                         # При нескольких исходящих из шлюза в одну дорожку выходим из вершин ромба (разные Y), иначе ветки сливаются.
-                        source_lane = element_to_lane.get(source_id) if source_id else None
-                        target_lane = element_to_lane.get(target_id) if target_id else None
                         gateway_right = sb["x"] + sb["w"]
                         same_lane_right = (
                             n_out <= 1
@@ -488,6 +519,29 @@ class BpmnLayoutService:
                                 (exit_x, last_wp_y),
                                 (last_wp_x, last_wp_y),
                             ]
+                        wp_lines = "\n".join(
+                            f'      <di:waypoint x="{x}" y="{y}"/>' for x, y in waypoints
+                        )
+                        adjusted_edge = re.sub(
+                            r"(<bpmndi:BPMNEdge[^>]*>)\s*[\s\S]*?(\s*</bpmndi:BPMNEdge>)",
+                            r"\1\n" + wp_lines + r"\n      \2",
+                            exml,
+                            count=1,
+                            flags=re.IGNORECASE,
+                        )
+                        collected_edges.append(adjusted_edge)
+                    elif (
+                        source_lane is not None
+                        and target_lane is not None
+                        and source_lane != target_lane
+                        and first_wp_x is not None
+                        and last_wp_x is not None
+                    ):
+                        # Переход между дорожками: вертикальная линия (без диагонали)
+                        center_x = sb["x"] + sb["w"] / 2
+                        src_bottom = sb["y"] + sb["h"]
+                        tgt_top = tb["y"]
+                        waypoints = [(center_x, src_bottom), (center_x, tgt_top)]
                         wp_lines = "\n".join(
                             f'      <di:waypoint x="{x}" y="{y}"/>' for x, y in waypoints
                         )

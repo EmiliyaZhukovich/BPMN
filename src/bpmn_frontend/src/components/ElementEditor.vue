@@ -49,6 +49,26 @@
       />
     </div>
 
+    <!-- Переход к элементу на другой дорожке (только для элементов верхнего уровня, не шлюз и не конец) -->
+    <div
+      v-if="!isNested && canHaveNextElement && nextElementOptions.length > 0"
+      class="next-element-row"
+    >
+      <span class="next-element-label">Переход к:</span>
+      <v-select
+        :model-value="element.nextElementId || ''"
+        :items="nextElementOptions"
+        item-title="title"
+        item-value="value"
+        density="compact"
+        hide-details
+        clearable
+        placeholder="Следующий в дорожке"
+        class="next-element-select"
+        @update:model-value="updateNextElement"
+      />
+    </div>
+
     <div v-if="isGateway && expanded" class="gateway-content">
       <div class="branches-container">
         <div
@@ -222,6 +242,35 @@ export default {
       }
       return false;
     });
+
+    /** Элемент может иметь явный переход на другой элемент (в т.ч. на другой дорожке): не шлюз и не конец */
+    const canHaveNextElement = computed(
+      () =>
+        !isGateway.value &&
+        props.element.type !== 'endEvent'
+    );
+
+    /** Список элементов пула для выбора «Переход к» (все элементы из всех дорожек, кроме текущего) */
+    const nextElementOptions = computed(() => {
+      const poolData = props.pool && props.pool.lanes ? props.pool : null;
+      const lanes = poolData ? poolData.lanes : Array.isArray(props.lanes) ? props.lanes : [];
+      const options = [];
+      lanes.forEach((lane) => {
+        const laneName = lane.name || lane.id || 'Дорожка';
+        (lane.elements || []).forEach((el) => {
+          if (!el || el.id === props.element.id) return;
+          const label = (el.label && String(el.label).trim()) || getElementTypeLabel(el.type || 'task');
+          options.push({ value: el.id, title: `${label} — ${laneName}` });
+        });
+      });
+      return options;
+    });
+
+    function updateNextElement(value) {
+      const updatedElement = JSON.parse(JSON.stringify(props.element));
+      updatedElement.nextElementId = (value && String(value).trim()) || undefined;
+      emit('update', updatedElement);
+    }
 
     const taskTypes = [
       { title: 'Задача', value: 'task' },
@@ -518,6 +567,9 @@ export default {
       localLabel,
       isGateway,
       hasError,
+      canHaveNextElement,
+      nextElementOptions,
+      updateNextElement,
       taskTypes,
       taskTypeValue,
       toggleExpanded,
@@ -617,6 +669,26 @@ export default {
 
 .delete-btn:hover {
   opacity: 1;
+}
+
+.next-element-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #eee;
+  background: #fafafa;
+}
+
+.next-element-label {
+  font-size: 0.85rem;
+  color: #616161;
+  flex-shrink: 0;
+}
+
+.next-element-select {
+  flex: 1;
+  min-width: 0;
 }
 
 .gateway-question-section {

@@ -356,6 +356,23 @@ export function generateBpmnXml(diagramOrProcess) {
       }
     });
 
+    // Переходы на другую дорожку: если у элемента задан nextElementId, добавляем flow к этому элементу
+    const isGatewayType = (t) =>
+      t === 'exclusiveGateway' || t === 'inclusiveGateway' || t === 'parallelGateway';
+    pool.lanes?.forEach((lane) => {
+      (lane.elements || []).forEach((el) => {
+        if (
+          el.nextElementId &&
+          el.id &&
+          !isGatewayType(el.type) &&
+          el.type !== 'endEvent' &&
+          elementMap.has(el.nextElementId)
+        ) {
+          addFlow(el.id, el.nextElementId);
+        }
+      });
+    });
+
     // Карта: элемент (id) → индекс ветки (0, 1, …) для элементов внутри gateway.branches[].path в одной дорожке
     const elementToBranchIndex = new Map();
     // Распределяем элементы по дорожкам: основной поток — в свою дорожку; ветки шлюза — в branch.laneId или в дорожку шлюза
@@ -1089,9 +1106,30 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       }
       pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
     } else {
-      const start = { x: src.x + srcSize.w / 2, y: src.y };
-      const end = { x: tgt.x - tgtSize.w / 2, y: tgt.y };
-      pushEdge(flow.id, flow.id, start, end, flow.condition);
+      const srcLane = laneIdByElement.get(flow.sourceRef);
+      const tgtLane = laneIdByElement.get(flow.targetRef);
+      const crossLane = srcLane && tgtLane && srcLane !== tgtLane;
+      if (crossLane) {
+        // Переход между дорожками: ортогональная ломаная (вертикаль — горизонталь — вертикаль), без диагонали
+        const srcBottomY = src.y + srcSize.h / 2;
+        const tgtTopY = tgt.y - tgtSize.h / 2;
+        const waypoints =
+          Math.abs(src.x - tgt.x) < 1
+            ? [
+                { x: src.x, y: srcBottomY },
+                { x: src.x, y: tgtTopY },
+              ]
+            : [
+                { x: src.x, y: srcBottomY },
+                { x: src.x, y: tgtTopY },
+                { x: tgt.x, y: tgtTopY },
+              ];
+        pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
+      } else {
+        const start = { x: src.x + srcSize.w / 2, y: src.y };
+        const end = { x: tgt.x - tgtSize.w / 2, y: tgt.y };
+        pushEdge(flow.id, flow.id, start, end, flow.condition);
+      }
     }
   });
 
