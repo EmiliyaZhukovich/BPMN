@@ -233,12 +233,8 @@ export function generateBpmnXml(diagramOrProcess) {
         // Only connect last element to join gateway if:
         // 1. Join gateway exists (there are elements after the gateway)
         // 2. Branch doesn't end with end event
-        if (joinGatewayId && !branchEndsWithEndEvent) {
-          const lastElement = uniqueBranchElements[uniqueBranchElements.length - 1];
-          if (lastElement) {
-            addFlow(lastElement.id, joinGatewayId);
-          }
-        } else if (branchEndsWithEndEvent) {
+        // Last branch element → join is already connected by transformProcess(..., joinGatewayId)
+        if (branchEndsWithEndEvent) {
           hasBranchesEndingInEndEvent = true;
           // If this branch ends with a duplicate end event, store connection info for second pass
           if (isDuplicateEndEventInBranch && mergedEndEventIdInBranch) {
@@ -325,9 +321,7 @@ export function generateBpmnXml(diagramOrProcess) {
       if (branchElements.length > 0) {
         const firstElement = branchElements[0];
         addFlow(gateway.id, firstElement.id);
-
-        const lastElement = branchElements[branchElements.length - 1];
-        addFlow(lastElement.id, joinGatewayId);
+        // Last element → join is already connected by transformProcess(..., joinGatewayId)
       }
     });
 
@@ -706,6 +700,12 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
   const laneHeights = new Map(); // laneId -> height
   const laneBounds = new Map(); // laneId -> { x, y, w, h }
   const laneIdByElement = new Map(); // elementId -> laneId
+  /** Для пересчёта dc:Bounds пула/дорожек после финальной раскладки узлов */
+  const participantDiMeta = [];
+  /** Горизонтальный шаг узлов в дорожке (линейный порядок); меньше — компактнее диаграмма */
+  const LANE_FLOW_STEP_X = 120;
+  /** Колонки после шлюза: чуть длиннее обычного шага, чтобы ветви читались, но без раздувания */
+  const COLUMN_SPACING = 172;
 
   /** @param {string} [attrs] - optional attributes for BPMNShape, e.g. ' isHorizontal="true"' */
   function pushShape(id, bpmnElement, x, y, w, h, attrs = '') {
@@ -720,8 +720,29 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     if (!labelText || !String(labelText).trim()) return '';
     const w = Math.max(20, Math.min(120, String(labelText).length * 8));
     const h = 14;
-    let x, y;
-    if (Array.isArray(waypointsOrStartEnd) && waypointsOrStartEnd.length >= 2) {
+    const LABEL_GAP = 8;
+    let x;
+    let y;
+    if (Array.isArray(waypointsOrStartEnd) && waypointsOrStartEnd.length >= 3) {
+      const wp = waypointsOrStartEnd;
+      const p0 = wp[0];
+      const p1 = wp[1];
+      const p2 = wp[2];
+      // Вертикаль → горизонталь (выход из шлюза к задаче): подпись над горизонтальным участком, не на линии
+      if (Math.abs(p0.x - p1.x) < 0.5 && Math.abs(p1.y - p2.y) < 0.5) {
+        x = (p1.x + p2.x) / 2 - w / 2;
+        y = p1.y - h - LABEL_GAP;
+      } else if (Math.abs(p0.y - p1.y) < 0.5 && Math.abs(p1.x - p2.x) < 0.5) {
+        x = (p0.x + p1.x) / 2 - w / 2;
+        y = p0.y - h - LABEL_GAP;
+      } else {
+        const mid = Math.floor(wp.length / 2);
+        const pa = wp[mid - 1];
+        const pb = wp[mid];
+        x = (pa.x + pb.x) / 2 - w / 2;
+        y = (pa.y + pb.y) / 2 - h / 2;
+      }
+    } else if (Array.isArray(waypointsOrStartEnd) && waypointsOrStartEnd.length >= 2) {
       const mid = Math.floor(waypointsOrStartEnd.length / 2);
       const p0 = waypointsOrStartEnd[mid - 1];
       const p1 = waypointsOrStartEnd[mid];
@@ -792,9 +813,10 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
 
     const totalLaneHeight = laneHeightsLocal.reduce((acc, h) => acc + h, 0);
     const participantHeight = Math.max(200, totalLaneHeight);
-    const participantWidth = 1200;
+    const participantWidth = 880;
     const participantX = 0;
     const participantY = currentY;
+    const laneMetaForParticipant = [];
     if (processInfo) {
       participantPosByProcess.set(processInfo.processId, {
         x: participantX,
@@ -816,6 +838,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         const laneX = participantX + 40;
         const laneWidth = participantWidth - 40;
         pushShape(`Lane_${lane.id}`, lane.id, laneX, laneY, laneWidth, laneHeight, ' isHorizontal="true"');
+        laneMetaForParticipant.push({ bpmnElement: lane.id, x: laneX, y: laneY, w: laneWidth, h: laneHeight });
         laneBounds.set(lane.id, { x: laneX, y: laneY, w: laneWidth, h: laneHeight });
 
         let elementToBranchIndex = processInfo?.elementToBranchIndex;
@@ -854,7 +877,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
 
         laneElements.forEach((elemId, idx) => {
           laneIdByElement.set(elemId, lane.id);
-          const x = laneX + 100 + idx * 200;
+          const x = laneX + 100 + idx * LANE_FLOW_STEP_X;
           let y;
           if (sameLaneMultipleBranches && nBranchRows >= 2) {
             const branchIndex = elementToBranchIndex?.get(elemId);
@@ -935,13 +958,24 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       const laneX = participantX + 40;
       const laneWidth = participantWidth - 40;
       pushShape(`Lane_${participant.id}_default`, participant.id, laneX, laneY, laneWidth, laneHeight, ' isHorizontal="true"');
+      laneMetaForParticipant.push({ bpmnElement: participant.id, x: laneX, y: laneY, w: laneWidth, h: laneHeight });
       const processElements = processInfo?.elements || [];
       processElements.forEach((el, idx) => {
-        const x = laneX + 80 + idx * 160;
+        const x = laneX + 70 + idx * Math.round(LANE_FLOW_STEP_X * 0.78);
         const y = laneY + laneHeight / 2;
         elementPositionMap.set(el.id, { x, y });
       });
     }
+
+    participantDiMeta.push({
+      participantId: participant.id,
+      processId: processInfo?.processId,
+      participantX,
+      participantY,
+      initialWidth: participantWidth,
+      initialHeight: participantHeight,
+      lanes: laneMetaForParticipant,
+    });
 
     currentY += participantHeight + 60;
   });
@@ -949,7 +983,6 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
   // Карта «элемент → { laneId, row, nRows, gatewayId, depth }» для разведения веток по Y и выравнивания X по колонкам
   const elementToBranchRow = new Map();
   const gatewaysWithSameLaneBranches = new Set();
-  const COLUMN_SPACING = 220; // расстояние по X между колонками в одной дорожке при двух ветках
   sequenceFlows.forEach((flow) => {
     const gatewayId = flow.sourceRef;
     if (gatewaysWithSameLaneBranches.has(gatewayId)) return;
@@ -1003,9 +1036,13 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     if (data.nRows == null) data.nRows = (laneMaxRow.get(data.laneId) ?? 0) + 1;
   });
 
-  // Shapes for flow nodes
+  // Shapes for flow nodes (синтетический join *-join обрабатываем отдельно — его нет в laneElementMap)
   processes.forEach((processInfo) => {
     processInfo.elements.forEach((element) => {
+      if (element.id && element.id.endsWith('-join')) {
+        elementSizeMap.set(element.id, { w: 50, h: 50 });
+        return;
+      }
       const pos = elementPositionMap.get(element.id);
       let finalPos = pos;
       if (!finalPos) {
@@ -1016,7 +1053,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         const xs = laneElems
           .map((id) => elementPositionMap.get(id)?.x)
           .filter((v) => typeof v === 'number');
-        const baseX = xs.length > 0 ? Math.max(...xs) + 150 : (laneBox ? laneBox.x + 100 : participantPos ? participantPos.x + 80 : 80);
+        const baseX = xs.length > 0 ? Math.max(...xs) + Math.round(LANE_FLOW_STEP_X * 0.75) : (laneBox ? laneBox.x + 120 : participantPos ? participantPos.x + 100 : 100);
         const baseY = laneBox ? laneBox.y + laneBox.h / 2 : participantPos ? participantPos.y + participantPos.h / 2 : 200;
         finalPos = { x: baseX, y: baseY };
         elementPositionMap.set(element.id, finalPos);
@@ -1034,11 +1071,11 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       if (branchData && elLaneBox && branchData.nRows >= 2 && branchData.gatewayId != null) {
         const gatewayPos = elementPositionMap.get(branchData.gatewayId);
         const fraction = (branchData.row + 1) / (branchData.nRows + 1);
-        const centerY = elLaneBox.y + elLaneBox.h * fraction;
+        const centerY = Math.round((elLaneBox.y + elLaneBox.h * fraction) * 10) / 10;
         y = centerY - h / 2;
         let centerX = finalPos.x;
         if (gatewayPos && typeof gatewayPos.x === 'number') {
-          centerX = gatewayPos.x + (branchData.depth + 1) * COLUMN_SPACING;
+          centerX = Math.round((gatewayPos.x + (branchData.depth + 1) * COLUMN_SPACING) * 10) / 10;
           x = centerX - w / 2;
         }
         elementPositionMap.set(element.id, { x: centerX, y: centerY });
@@ -1054,6 +1091,168 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       const nodeAttrs = isGateway ? ' isMarkerVisible="true"' : '';
       pushShape(`Node_${element.id}`, element.id, x, y, w, h, nodeAttrs);
     });
+  });
+
+  function fmtDi(n) {
+    if (typeof n !== 'number' || Number.isNaN(n)) return 0;
+    return Math.round(n * 10) / 10;
+  }
+
+  function replaceBpmnShapeBounds(planeShapes, bpmnElementId, x, y, w, h) {
+    const bounds = `<dc:Bounds x="${fmtDi(x)}" y="${fmtDi(y)}" width="${fmtDi(w)}" height="${fmtDi(h)}"/>`;
+    for (let i = 0; i < planeShapes.length; i++) {
+      if (!planeShapes[i].includes(`bpmnElement="${bpmnElementId}"`)) continue;
+      planeShapes[i] = planeShapes[i].replace(/<dc:Bounds x="[^"]*" y="[^"]*" width="[^"]*" height="[^"]*"\/>/, bounds);
+      break;
+    }
+  }
+
+  // Join-шлюз: вторая колонка на том же шаге, что и fork→ветка (2×COLUMN_SPACING от центра fork), чтобы горизонтальные сегменты были ровными
+  const JOIN_GAP = 52;
+  processes.forEach((processInfo) => {
+    processInfo.elements.forEach((element) => {
+      if (!element.id || !element.id.endsWith('-join')) return;
+      const forkId = element.id.slice(0, -'-join'.length);
+      const forkPos = elementPositionMap.get(forkId);
+      if (!forkPos) return;
+      const incoming = sequenceFlows.filter((f) => f.targetRef === element.id);
+      let maxRight = forkPos.x + 25;
+      incoming.forEach((f) => {
+        const srcPos = elementPositionMap.get(f.sourceRef);
+        const srcSize = elementSizeMap.get(f.sourceRef);
+        if (!srcPos || !srcSize) return;
+        const right = srcPos.x + srcSize.w / 2;
+        if (right > maxRight) maxRight = right;
+      });
+      const joinW = 50;
+      // Горизонталь fork→задача: от центра fork до левого края задачи = COLUMN_SPACING − w_task/2;
+      // такой же отрезок справа от задачи до join: joinCenter = fork + 2×COLUMN_SPACING + joinW/2
+      const symmetricJoinCenterX = forkPos.x + 2 * COLUMN_SPACING + joinW / 2;
+      const joinCenterXFromContent = maxRight + JOIN_GAP + joinW / 2;
+      const joinCenterX = Math.max(symmetricJoinCenterX, joinCenterXFromContent);
+      const joinCenterY = forkPos.y;
+      elementPositionMap.set(element.id, { x: joinCenterX, y: joinCenterY });
+      const laneId = laneIdByElement.get(forkId);
+      if (laneId) laneIdByElement.set(element.id, laneId);
+    });
+  });
+
+  // Линейный хвост после join (join → задача → … → конец): те же шаги по центрам, что и на основной линии (LANE_FLOW_STEP_X)
+  processes.forEach((processInfo) => {
+    const processElementIds = new Set(processInfo.elements.map((e) => e.id));
+    processInfo.elements.forEach((element) => {
+      if (!element.id || !element.id.endsWith('-join')) return;
+      const joinPos = elementPositionMap.get(element.id);
+      if (!joinPos) return;
+      const outFlows = sequenceFlows.filter(
+        (f) => f.sourceRef === element.id && processElementIds.has(f.targetRef)
+      );
+      if (outFlows.length !== 1) return;
+      const laneId = laneIdByElement.get(element.id);
+      const laneBox = laneId ? laneBounds.get(laneId) : null;
+      const laneMidY = laneBox ? laneBox.y + laneBox.h / 2 : joinPos.y;
+
+      let prevCenterX = joinPos.x;
+      let curId = outFlows[0].targetRef;
+      const visited = new Set();
+      while (curId && !visited.has(curId)) {
+        visited.add(curId);
+        const el = processInfo.elements.find((e) => e.id === curId);
+        if (!el) break;
+        if (el.id.endsWith('-join')) break;
+        prevCenterX += LANE_FLOW_STEP_X;
+        const isGateway = el.type && el.type.includes('Gateway');
+        const w = isGateway ? 50 : (el.type === 'task' ? 100 : 36);
+        const h = isGateway ? 50 : (el.type === 'task' ? 80 : 36);
+        const centerY = laneMidY;
+        elementPositionMap.set(curId, { x: prevCenterX, y: centerY });
+        elementSizeMap.set(curId, { w, h });
+        let x = prevCenterX - w / 2;
+        let y = centerY - h / 2;
+        const elLaneId = laneIdByElement.get(curId);
+        const elLaneBox = elLaneId ? laneBounds.get(elLaneId) : null;
+        if (elLaneBox) {
+          const minY = elLaneBox.y + 5;
+          const maxY = elLaneBox.y + elLaneBox.h - h - 5;
+          if (y < minY) y = minY;
+          if (y > maxY) y = maxY;
+        }
+        if (y < 0) y = 0;
+        replaceBpmnShapeBounds(planeShapes, curId, x, y, w, h);
+
+        const nextFlows = sequenceFlows.filter(
+          (f) => f.sourceRef === curId && processElementIds.has(f.targetRef)
+        );
+        if (nextFlows.length !== 1) break;
+        curId = nextFlows[0].targetRef;
+      }
+    });
+  });
+
+  processes.forEach((processInfo) => {
+    processInfo.elements.forEach((element) => {
+      if (!element.id || !element.id.endsWith('-join')) return;
+      const pos = elementPositionMap.get(element.id);
+      if (!pos) return;
+      const w = 50;
+      const h = 50;
+      let x = pos.x - w / 2;
+      let y = pos.y - h / 2;
+      const elLaneId = laneIdByElement.get(element.id);
+      const elLaneBox = elLaneId ? laneBounds.get(elLaneId) : null;
+      if (elLaneBox) {
+        const minY = elLaneBox.y + 5;
+        const maxY = elLaneBox.y + elLaneBox.h - h - 5;
+        if (y < minY) y = minY;
+        if (y > maxY) y = maxY;
+      }
+      if (y < 0) y = 0;
+      pushShape(`Node_${element.id}`, element.id, x, y, w, h, ' isMarkerVisible="true"');
+    });
+  });
+
+  const POOL_CONTENT_PAD = 40;
+  participantDiMeta.forEach((meta) => {
+    if (!meta.processId) return;
+    const processInfo = [...processes.values()].find((p) => p.processId === meta.processId);
+    if (!processInfo) return;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    processInfo.elements.forEach((el) => {
+      const pos = elementPositionMap.get(el.id);
+      const size = elementSizeMap.get(el.id);
+      if (!pos || !size) return;
+      const right = pos.x + size.w / 2;
+      const bottom = pos.y + size.h / 2;
+      if (right > maxX) maxX = right;
+      if (bottom > maxY) maxY = bottom;
+    });
+    if (!Number.isFinite(maxX)) return;
+
+    const newW = Math.max(meta.initialWidth, maxX - meta.participantX + POOL_CONTENT_PAD);
+    const newH = Math.max(meta.initialHeight, maxY - meta.participantY + POOL_CONTENT_PAD);
+    const deltaH = newH - meta.initialHeight;
+
+    replaceBpmnShapeBounds(planeShapes, meta.participantId, meta.participantX, meta.participantY, newW, newH);
+    participantPosByProcess.set(meta.processId, {
+      x: meta.participantX,
+      y: meta.participantY,
+      w: newW,
+      h: newH,
+    });
+
+    if (meta.lanes.length === 0) return;
+    const laneW = newW - 40;
+    if (meta.lanes.length === 1) {
+      const lm = meta.lanes[0];
+      replaceBpmnShapeBounds(planeShapes, lm.bpmnElement, lm.x, lm.y, laneW, newH);
+    } else {
+      meta.lanes.forEach((lm, idx) => {
+        const isLast = idx === meta.lanes.length - 1;
+        const h = isLast ? lm.h + deltaH : lm.h;
+        replaceBpmnShapeBounds(planeShapes, lm.bpmnElement, lm.x, lm.y, laneW, h);
+      });
+    }
   });
 
   // Порядок исходящих потоков у шлюзов (для ортогональной маршрутизации по BPMN)
@@ -1079,33 +1278,18 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     if (isFromGatewayWithBranches) {
       const outIndex = outList.indexOf(flow.id);
       const nOut = outList.length;
-      const srcLane = laneIdByElement.get(flow.sourceRef);
-      const tgtLane = laneIdByElement.get(flow.targetRef);
-      const sameLaneRight = srcLane && srcLane === tgtLane && tgt.x > src.x;
-      let waypoints;
-      if (sameLaneRight) {
-        // Цель в той же дорожке справа — вертикально до Y цели, затем горизонтально (ветки в одной дорожке не сливаются)
-        const exitRight = src.x + srcSize.w / 2;
-        const tgtLeft = tgt.x - tgtSize.w / 2;
-        waypoints = [
-          { x: exitRight, y: src.y },
-          { x: exitRight, y: tgt.y },
-          { x: tgtLeft, y: tgt.y },
-        ];
-      } else {
-        // Выход из верхней/нижней вершин ромба: (center_x, top) и (center_x, bottom)
-        const exitX = src.x;
-        const exitY = nOut <= 1
-          ? src.y
-          : src.y - srcSize.h / 2 + (outIndex / (nOut - 1)) * srcSize.h;
-        const tgtCenterY = tgt.y;
-        const tgtLeft = tgt.x - tgtSize.w / 2;
-        waypoints = [
-          { x: exitX, y: exitY },
-          { x: exitX, y: tgtCenterY },
-          { x: tgtLeft, y: tgtCenterY },
-        ];
-      }
+      // Выход из верхней/нижней (и промежуточных при 3+) точек ромба по вертикали, не с правого центра —
+      // при двух ветках: сверху и снизу шлюза.
+      const exitX = src.x;
+      const exitY =
+        nOut <= 1 ? src.y : src.y - srcSize.h / 2 + (outIndex / (nOut - 1)) * srcSize.h;
+      const tgtCenterY = tgt.y;
+      const tgtLeft = tgt.x - tgtSize.w / 2;
+      const waypoints = [
+        { x: exitX, y: exitY },
+        { x: exitX, y: tgtCenterY },
+        { x: tgtLeft, y: tgtCenterY },
+      ];
       pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
     } else {
       const srcLane = laneIdByElement.get(flow.sourceRef);
@@ -1133,9 +1317,72 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
               ];
         pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
       } else {
-        const start = { x: src.x + srcSize.w / 2, y: src.y };
-        const end = { x: tgt.x - tgtSize.w / 2, y: tgt.y };
-        pushEdge(flow.id, flow.id, start, end, flow.condition);
+        const srcRight = src.x + srcSize.w / 2;
+        const tgtLeft = tgt.x - tgtSize.w / 2;
+        const sameLane = srcLane && tgtLane && srcLane === tgtLane;
+        const yDiff = Math.abs(src.y - tgt.y);
+
+        // Вход в join: горизонталь до колонки центра, затем вертикаль к верхней/нижней границе ромба (как bpmn-io, не к центру)
+        if (flow.targetRef.endsWith('-join')) {
+          let waypoints;
+          if (yDiff < 1) {
+            waypoints = [
+              { x: srcRight, y: src.y },
+              { x: tgtLeft, y: tgt.y },
+            ];
+          } else if (src.y < tgt.y) {
+            const joinTopY = tgt.y - tgtSize.h / 2;
+            waypoints = [
+              { x: srcRight, y: src.y },
+              { x: tgt.x, y: src.y },
+              { x: tgt.x, y: joinTopY },
+            ];
+          } else {
+            const joinBottomY = tgt.y + tgtSize.h / 2;
+            waypoints = [
+              { x: srcRight, y: src.y },
+              { x: tgt.x, y: src.y },
+              { x: tgt.x, y: joinBottomY },
+            ];
+          }
+          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
+        } else if (flow.sourceRef.endsWith('-join')) {
+          const exitR = src.x + srcSize.w / 2;
+          const tgtL = tgt.x - tgtSize.w / 2;
+          let waypoints;
+          if (yDiff < 2) {
+            waypoints = [
+              { x: exitR, y: src.y },
+              { x: tgtL, y: tgt.y },
+            ];
+          } else {
+            waypoints = [
+              { x: exitR, y: src.y },
+              { x: exitR, y: tgt.y },
+              { x: tgtL, y: tgt.y },
+            ];
+          }
+          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
+        } else if (sameLane && yDiff > 2) {
+          // Одна дорожка, разный Y (например после задач веток, не join): L-образная ломаная
+          const waypoints =
+            tgtLeft >= srcRight - 1
+              ? [
+                  { x: srcRight, y: src.y },
+                  { x: tgtLeft, y: src.y },
+                  { x: tgtLeft, y: tgt.y },
+                ]
+              : [
+                  { x: srcRight, y: src.y },
+                  { x: srcRight, y: tgt.y },
+                  { x: tgtLeft, y: tgt.y },
+                ];
+          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
+        } else {
+          const start = { x: srcRight, y: src.y };
+          const end = { x: tgtLeft, y: tgt.y };
+          pushEdge(flow.id, flow.id, start, end, flow.condition);
+        }
       }
     }
   });

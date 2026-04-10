@@ -1,0 +1,120 @@
+@startuml bpmn-assistant-use-cases
+title BPMN Assistant — диаграмма вариантов использования
+
+skinparam shadowing false
+skinparam handwritten false
+skinparam actorStyle awesome
+skinparam linetype ortho
+skinparam nodesep 70
+skinparam ranksep 56
+skinparam packageStyle rectangle
+skinparam package {
+  BackgroundColor #F4F7FB
+  BorderColor #5C7CA6
+  FontStyle bold
+  FontColor #2C3E50
+}
+skinparam usecase {
+  BackgroundColor #E8EEF7
+  BorderColor #3D5A80
+  FontColor #1A2B3C
+  RoundCorner 18
+  FontSize 11
+}
+skinparam actor {
+  BackgroundColor #FFF6E8
+  BorderColor #C67C2A
+  FontColor #3D2914
+}
+skinparam rectangle {
+  BackgroundColor #FAFBFD
+  BorderColor #8FA3B8
+  RoundCorner 22
+}
+skinparam arrow {
+  Color #4A5568
+  FontSize 10
+}
+skinparam note {
+  BackgroundColor #FFFDF5
+  BorderColor #D4C48A
+  FontSize 10
+}
+
+left to right direction
+
+actor "Системный аналитик" as User
+
+rectangle "Система «BPMN Assistant»" as SYS {
+
+  package "Входы в систему" as P_IN {
+    usecase "Загрузить шаблон\nпроцесса" as UC_Template
+    usecase "Импортировать BPMN\nиз файла (.bpmn)" as UC_Import
+  }
+
+  package "Основной рабочий поток" as P_MAIN {
+    usecase "Настроить пул процесса\nи дорожки (lanes)" as UC_PoolLanes
+    usecase "Смоделировать бизнес-процесс\n(события, задачи, шлюзы)" as UC_Model
+    usecase "Построить диаграмму\nи просмотреть на холсте" as UC_BuildView
+    usecase "Автоматическая проверка модели\n(валидация)" as UC_Validate <<система>>
+    usecase "Экспортировать результат\n(BPMN XML, PNG, SVG)" as UC_Export
+  }
+
+  package "Вспомогательные действия" as P_AUX {
+    usecase "Отменить / повторить\nизменения" as UC_UndoRedo
+    usecase "Очистить конструктор" as UC_Clear
+  }
+
+  UC_Template -[hidden]right- UC_Import
+  UC_PoolLanes -[hidden]down- UC_Model
+  UC_Model -[hidden]down- UC_BuildView
+  UC_BuildView -[hidden]right- UC_Validate
+  UC_BuildView -[hidden]down- UC_Export
+  UC_UndoRedo -[hidden]right- UC_Clear
+
+  P_IN -[hidden]right- P_MAIN
+  P_MAIN -[hidden]right- P_AUX
+}
+
+User --> UC_PoolLanes
+User --> UC_Model
+User --> UC_Template
+User --> UC_Import
+
+UC_PoolLanes --> UC_Model
+
+UC_Model --> UC_BuildView : кнопка «Построить»
+UC_BuildView ..> UC_Validate : <<include>> — автоматически при построении
+UC_BuildView --> UC_Export
+UC_BuildView .> UC_Clear
+UC_BuildView .> UC_UndoRedo
+
+UC_Template --> UC_PoolLanes
+UC_Template --> UC_Model
+
+UC_Import --> UC_PoolLanes
+UC_Import --> UC_Model
+UC_Import ..> UC_BuildView : <<альтернатива>> — быстрый просмотр без ручного ввода
+
+UC_Model .> UC_UndoRedo : <<extend>> при наличии истории изменений
+UC_PoolLanes .> UC_UndoRedo : <<extend>> при наличии истории изменений
+UC_PoolLanes .> UC_Clear : <<extend>> при наличии элементов
+UC_Model .> UC_Clear : <<extend>> при наличии элементов
+
+note bottom of UC_Validate
+  Не инициируется пользователем: проверка целостности,
+  наличия конечных событий, отсутствия «висящих» элементов и др.
+end note
+
+note bottom of UC_BuildView
+  При построении диаграммы клиент запрашвивает
+  автоматическую разметку у бэкенда (process-bpmn);
+  без валидной модели просмотр недоступен.
+end note
+
+note bottom of UC_Export
+  Экспорт BPMN XML возможен при валидной модели;
+  PNG/SVG — после успешного отображения диаграммы.
+end note
+
+@enduml

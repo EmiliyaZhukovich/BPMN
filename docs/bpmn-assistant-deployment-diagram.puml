@@ -1,0 +1,69 @@
+@startuml bpmn-assistant-deployment-diagram
+title BPMN Assistant — диаграмма развёртывания\n(эксплуатация в корпоративной среде / веб-доступ)
+
+left to right direction
+
+skinparam shadowing false
+skinparam handwritten false
+skinparam nodesep 50
+skinparam ranksep 48
+skinparam packageStyle rectangle
+skinparam component {
+  BackgroundColor #E8EEF7
+  BorderColor #3D5A80
+  FontColor #1A2B3C
+}
+skinparam node {
+  BackgroundColor #F4F7FB
+  BorderColor #5C7CA6
+  FontColor #2C3E50
+  FontStyle bold
+}
+skinparam artifact {
+  BackgroundColor #FFFFFF
+  BorderColor #8FA3B8
+  FontColor #1A2B3C
+}
+skinparam arrow {
+  Color #4A5568
+  FontSize 10
+}
+
+' ========== Клиент ==========
+node "Рабочие станции сотрудников\n(аналитики)" <<device>> as NODE_CLIENT {
+  artifact "Веб-браузер/корпоративная среда" <<artifact>> as ART_BROWSER
+}
+
+' ========== Сервер: docker-compose.yml ==========
+node "Хост приложения\nDocker Compose • сеть **bpmn-network**" <<device>> as NODE_HOST {
+
+  node "Сервис **bpmn_frontend**\nобраз **nginx**" <<executionEnvironment>> as NODE_UI {
+    artifact "nginx\n(статика)" <<artifact>> as ART_HTTP
+    artifact "Сборка SPA\n(Vite → HTML, JS, CSS)" <<artifact>> as ART_SPA
+  }
+
+  node "Сервис **bpmn_assistant**\n**uvicorn** + **FastAPI**" <<executionEnvironment>> as NODE_API {
+    artifact "Python\n(FastAPI)" <<artifact>> as ART_PY
+    artifact "Пакет **bpmn_assistant**" <<artifact>> as ART_PKG
+    artifact "Node.js\n(авторазметка)" <<artifact>> as ART_NODE
+    artifact "**layout_process.js**\n+ npm" <<artifact>> as ART_LAYOUT
+  }
+}
+
+' Канал «устройство — хост» (TLS часто на корп. reverse proxy → те же порты)
+NODE_CLIENT - NODE_HOST : **ЛВС** организации\n(удалённо — **VPN**)\n----\nпри **HTTPS** снаружи: корп.\n**reverse proxy** (**443**)\n→ **8080** (UI) / **8000** (API)
+
+' Трафик из браузера — на диаграмме, без текстовых заметок
+ART_BROWSER ..> ART_HTTP : **HTTPS**\nзагрузка SPA\n→ порт хоста **8080**\n(или **443** через прокси)
+
+ART_BROWSER ..> ART_PY : **HTTPS REST**\n**/process-bpmn**\n**/bpmn_to_json**
+
+ART_HTTP ..> ART_SPA : отдаёт файлы
+
+ART_PY ..> ART_PKG : <<deploy>>
+
+ART_PKG ..> ART_NODE : <<use>>\n**/process-bpmn**:\n**subprocess** Node.js
+
+ART_NODE ..> ART_LAYOUT : <<deploy>>
+
+@enduml

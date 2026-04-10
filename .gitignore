@@ -195,3 +195,6 @@ scratch.py
 .claude
 
 .github/workflows/ci.yml
+
+# Local PlantUML CLI (optional; download from GitHub plantuml releases)
+tools/plantuml.jar

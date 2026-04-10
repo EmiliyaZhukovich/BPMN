@@ -1,0 +1,74 @@
+@startwbs org_stracture
+title Организационная структура\nООО «ИНФОДЕТАЛИ»
+
+skinparam backgroundColor #F4F7FB
+skinparam shadowing false
+skinparam defaultFontName "Segoe UI"
+skinparam defaultFontSize 12
+skinparam ArrowColor #3D5A80
+skinparam ArrowThickness 1.2
+skinparam roundCorner 10
+skinparam nodesep 12
+skinparam ranksep 28
+
+' Оформление узлов WBS (цвета в духе остальных диаграмм проекта)
+skinparam wbs {
+  BorderColor #3D5A80
+  FontColor #1A2B3C
+  BackgroundColor #FFFFFF
+}
+
+<style>
+wbsDiagram {
+  Linecolor #4A6FA5
+  line {
+    Color #4A6FA5
+  }
+  .root {
+    BackgroundColor #2C3E50
+    FontColor #FFFFFF
+    FontStyle bold
+  }
+  .level2 {
+    BackgroundColor #5C7CA6
+    FontColor #FFFFFF
+    FontStyle bold
+  }
+  .level3 {
+    BackgroundColor #E8EEF5
+    FontColor #1A2B3C
+    FontStyle bold
+  }
+  .level4 {
+    BackgroundColor #FFFFFF
+    FontColor #2C3E50
+  }
+  .highlight {
+    BackgroundColor #FFF8E6
+    FontColor #5D4E37
+    LineColor #C9A227
+  }
+}
+</style>
+
+* ООО «ИНФОДЕТАЛИ» <<root>>
+** Генеральный директор <<level2>>
+*** Совет директоров <<level3>>
+*** Директор по развитию бизнеса <<level3>>
+**** Отдел бизнес-анализа\n(4 аналитика) <<highlight>>
+*** Директор по информационным технологиям <<level3>>
+**** Отдел системного анализа\n(3 аналитика) <<highlight>>
+**** Отдел разработки <<level4>>
+**** Отдел тестирования и контроля качества <<level4>>
+**** Отдел внедрения и сопровождения <<level4>>
+**** Отдел управления проектами <<level4>>
+**** Отдел информационной\nбезопасности и IT-инфраструктуры <<level4>>
+*** Директор по качеству <<level3>>
+*** Директор по работе с персоналом <<level3>>
+
+legend bottom
+  |= Обозначение |
+  | <#FFF8E6> Основные пользователи модуля |
+end legend
+
+@endwbs

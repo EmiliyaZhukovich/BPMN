@@ -1,0 +1,97 @@
+@startuml bpmn-assistant-sequence-diagram
+title BPMN Assistant — диаграмма последовательности
+
+skinparam shadowing false
+skinparam handwritten false
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+skinparam ParticipantPadding 20
+skinparam BoxPadding 10
+
+skinparam participant {
+  BackgroundColor #E8EEF7
+  BorderColor #3D5A80
+  FontColor #1A2B3C
+}
+skinparam actor {
+  BackgroundColor #FFF6E8
+  BorderColor #C67C2A
+  FontColor #3D2914
+}
+skinparam note {
+  BackgroundColor #FFFDF5
+  BorderColor #D4C48A
+  FontSize 10
+}
+
+autonumber
+
+actor "Системный\nаналитик" as User
+
+box "Клиент (Vue.js)" #F4F7FB
+  participant "Панель\nконструктора" as Panel
+  participant "Главный\nэкран" as Home
+  participant "Модельер BPMN\n(bpmn-js)" as Modeler <<внешняя библиотека>>
+end box
+
+box "Сервер (FastAPI)" #F4F7FB
+  participant "Приложение\nAPI" as API <<контроллер>>
+  participant "Сервис\nразметки BPMN" as Layout <<контроллер>>
+end box
+
+User -> Panel: Настроить процесс,\nнажать «Построить диаграмму»
+activate Panel
+
+alt Модель не прошла проверку\n(валидация в конструкторе)
+  Panel --> User: Построение недоступно\n(кнопка отключена)
+  deactivate Panel
+else Модель допустима для построения
+  Panel -> Panel: сформироватьXml(модель диаграммы)\n(утилита генерации BPMN XML)
+  alt Ошибка генерации XML
+    Panel --> User: сообщение об ошибке\n(структура процесса)
+    deactivate Panel
+  else XML сформирован
+    Panel -> Home: событие: передать\nBPMN XML
+    activate Home
+    deactivate Panel
+
+    alt Пустая / сброшенная диаграмма
+      Home -> Modeler: импорт пустых definitions\n(очистка холста)
+      activate Modeler
+      Modeler --> Home: готово
+      deactivate Modeler
+      deactivate Home
+    else Непустой BPMN XML
+      Home -> API: **POST** /process-bpmn\nJSON: { bpmnXml }
+      activate API
+      API -> Layout: обработатьBpmn(xml)
+      activate Layout
+      Layout -> Layout: авторазметка\n(bpmn-auto-layout)
+      Layout --> API: BPMN XML с разметкой
+      deactivate Layout
+      API --> Home: JSON: { layoutedXml }
+      deactivate API
+
+      opt Сервер недоступен,\nошибка или пустой ответ
+        note right of Home
+          Клиент оставляет исходный XMLи пытается показать диаграмму\nбез новой разметки.
+        end note
+      end
+
+      Home -> Modeler: импортироватьXml\n(размеченный или исходный XML)
+      activate Modeler
+      Modeler --> Home: предупреждения / успех
+      deactivate Modeler
+
+      alt Критическая ошибка импорта
+        Home --> User: уведомление об ошибке\n(снекбар)
+      else Успешное отображение
+        Home --> User: уведомление об успехе\n(снекбар)
+      end
+      deactivate Home
+    end
+  end
+end
+
+
+@enduml

@@ -1,0 +1,95 @@
+@startuml bpmn-assistant-component-diagram
+title BPMN Assistant — диаграмма компонентов
+
+' Вертикальная схема: **сервер сверху** → **HTTP REST по центру между узлами** → **клиент снизу**
+' (без left-to-right, чтобы не уводить интерфейс под боковой край клиента)
+top to bottom direction
+
+skinparam shadowing false
+skinparam handwritten false
+skinparam nodesep 55
+skinparam ranksep 55
+skinparam packageStyle rectangle
+skinparam component {
+  BackgroundColor #E8EEF7
+  BorderColor #3D5A80
+  FontColor #1A2B3C
+}
+skinparam node {
+  BackgroundColor #F4F7FB
+  BorderColor #5C7CA6
+  FontColor #2C3E50
+  FontStyle bold
+}
+skinparam artifact {
+  BackgroundColor #FFFFFF
+  BorderColor #8FA3B8
+  FontColor #1A2B3C
+}
+skinparam arrow {
+  Color #4A5568
+  FontSize 10
+}
+skinparam note {
+  BackgroundColor #FFFDF5
+  BorderColor #D4C48A
+  FontSize 10
+}
+
+' ========== 1. Узел сервера (вверху диаграммы) ==========
+node "Сервер приложений\n(Python + Node.js для скрипта разметки)" as NODE_SERVER {
+
+  together {
+    component "Сервис авторазметки\nBPMN" <<component>> as COMP_LAYOUT
+    component "Сервис преобразования\nBPMN XML → JSON" <<component>> as COMP_JSON
+  }
+
+  together {
+    artifact "Скрипт разметки\n(layout_process.js)" <<artifact>> as ART_LAYOUT
+    artifact "Пакет приложения\n(Python-модули)" <<artifact>> as ART_PY
+  }
+
+  ' У нижней границы узла — краткая вертикаль к интерфейсу между узлами
+  component "FastAPI" <<component>> as COMP_API
+}
+
+' ========== 2. Контракт REST — строго между двумя прямоугольниками ==========
+() "HTTP REST\nBPMN Assistant" as IF_REST
+
+note right of IF_REST
+  **Контракт API:**
+  • **POST** /process-bpmn
+  • **POST** /bpmn_to_json
+end note
+
+' ========== 3. Узел клиента (внизу диаграммы) ==========
+node "Клиентское окружение\n(браузер)" as NODE_CLIENT {
+
+  ' У верхней границы узла — краткая вертикаль к интерфейсу
+  component "Одностраничное приложение\n«BPMN Assistant» (Vue.js)" <<component>> as COMP_SPA
+
+  together {
+    artifact "Сборка фронтенда\n(Vite)" <<artifact>> as ART_FE
+    component "Библиотека BPMN\n(bpmn-js)" <<component>> as COMP_BPMNJS
+  }
+}
+
+' Цепочка раскладки: сервер — интерфейс — клиент (одна вертикаль, без «уезда» в сторону)
+NODE_SERVER -[hidden]down- IF_REST
+IF_REST -[hidden]down- NODE_CLIENT
+
+' Главная «магистраль» без пересечения прямоугольников узлов
+COMP_API -down- IF_REST : реализует\nконечные точки
+COMP_SPA -up..> IF_REST : обращается по REST\n(требуемый контракт)
+
+' Внутренние связи сервера — в основном вверх от API, не через зону REST
+COMP_API -up..> COMP_LAYOUT : /process-bpmn
+COMP_API -up..> COMP_JSON : /bpmn_to_json
+COMP_LAYOUT -down..> ART_LAYOUT : subprocess
+COMP_API -left..> ART_PY : код\nприложения
+
+' Внутренние связи клиента — по горизонтали, вне вертикали REST
+COMP_SPA -down..> COMP_BPMNJS : холст BPMN
+COMP_SPA -left..> ART_FE : сборка
+
+@enduml

@@ -205,22 +205,24 @@ export default {
       try {
         console.log('Processing BPMN XML:', bpmnXmlValue.substring(0, 200));
 
-        // Try auto-layout first, but don't fail if it doesn't work
+        // Внешний layout перезаписывает BPMNDI и ломает ортогональные стрелки у пулов/дорожек — не вызываем его,
+        // если уже есть полная разметка от генератора (BPMNEdge в collaboration).
         let xmlToImport = bpmnXmlValue;
         const hasCollaboration = /<collaboration[\s>]/i.test(bpmnXmlValue) || /<participant[\s>]/i.test(bpmnXmlValue);
+        const hasEmbeddedBpmnDiEdges = /<bpmndi:BPMNEdge[\s>]/i.test(bpmnXmlValue);
+        const skipExternalLayout = hasCollaboration && hasEmbeddedBpmnDiEdges;
         try {
-          // Always try auto-layout (including diagrams with Collaboration/pools).
-          // If layout server fails or returns empty result, we fall back to original XML.
-          const layoutedXml = await this.processDiagram(bpmnXmlValue);
-          if (layoutedXml && layoutedXml.trim() !== '') {
-            console.log('Layouted XML received:', layoutedXml.substring(0, 200));
-            xmlToImport = layoutedXml;
-          } else {
-            console.warn('Layout server returned empty result, using original XML');
+          if (!skipExternalLayout) {
+            const layoutedXml = await this.processDiagram(bpmnXmlValue);
+            if (layoutedXml && layoutedXml.trim() !== '') {
+              console.log('Layouted XML received:', layoutedXml.substring(0, 200));
+              xmlToImport = layoutedXml;
+            } else {
+              console.warn('Layout server returned empty result, using original XML');
+            }
           }
         } catch (layoutError) {
           console.warn('Layout server error, using original XML:', layoutError);
-          // Continue with original XML
         }
 
         this.bpmnXml = xmlToImport;
