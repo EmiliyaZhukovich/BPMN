@@ -311,7 +311,7 @@
 <script>
 import { ref, computed, watch, onMounted, provide } from 'vue';
 import ElementEditor from './ElementEditor.vue';
-import { generateBpmnXml, validateProcess } from '../utils/bpmnGenerator';
+import { generateBpmnXml, validateDiagram } from '../utils/bpmnGenerator';
 import { getTemplate, getAllTemplates } from '../utils/templates';
 import {
   createEmptyDiagram,
@@ -390,10 +390,8 @@ export default {
     const canRedo = computed(() => historyIndex.value < history.value.length - 1);
 
     const validation = computed(() => {
-      // Get all elements from all pools/lanes
       const allElements = getAllElements(diagram.value);
-      const result = validateProcess(allElements, true);
-      // Debug: log process structure for troubleshooting
+      const result = validateDiagram(diagram.value);
       if (result.errors.length > 0) {
         console.log('Validation errors:', result.errors);
         console.log('Diagram structure:', JSON.stringify(diagram.value, null, 2));

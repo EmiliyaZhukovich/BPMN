@@ -3,7 +3,7 @@
  * Converts hierarchical process structure to BPMN XML format
  */
 
-import { migrateToDiagramModel, createEmptyDiagram } from './diagramModel.js';
+import { migrateToDiagramModel, createEmptyDiagram, getAllElements } from './diagramModel.js';
 import {
   isGatewayType,
   isParallelGatewayType,
@@ -1666,36 +1666,196 @@ function hasExplicitNextElementContinuation(el) {
 }
 
 /**
- * Хвост ветви шлюза: не «висящая» активность — либо конец, либо явный переход вне ветви, либо вложенный шлюз с корректными хвостами.
+ * Хвост ветви шлюза: не «висящая» активность — либо конец, либо явный переход вне ветви,
+ * либо вложенный шлюз с корректными хвостами, либо слияние в общий хвост дорожки после шлюза.
+ *
+ * @param {{ mergeAfterForkInLane?: boolean }} tailOpts — после шлюза в том же линейном массиве
+ *   (дорожка / path) идёт следующий узел: ветки сходятся туда (как в конструкторе: задачи 3/4 → шлюз/задача 8).
  */
-function collectGatewayBranchTailErrors(path, ctx) {
+function collectGatewayBranchTailErrors(path, ctx, tailOpts = {}) {
+  const mergeAfterForkInLane = Boolean(tailOpts.mergeAfterForkInLane);
+
   if (!path || path.length === 0) return [];
   const last = path[path.length - 1];
   if (!last) return [];
   if (last.type === 'endEvent') return [];
   if (hasExplicitNextElementContinuation(last)) return [];
+  if (last.type === 'startEvent') {
+    return [
+      `Ветвь «${ctx.branchLabel}» шлюза на позиции ${ctx.gatewayPosition}: в ветви не может быть события начала последним элементом.`,
+    ];
+  }
   if (isGatewayType(last.type)) {
     if (!last.branches || last.branches.length === 0) return [];
+    const gwIdx = path.indexOf(last);
+    const mergeAfterThisGwInPath = gwIdx >= 0 && gwIdx + 1 < path.length;
+    const propagateMerge = mergeAfterForkInLane || mergeAfterThisGwInPath;
     const errs = [];
     last.branches.forEach((b, bi) => {
       const subLabel = b.condition?.trim() || `${bi + 1}`;
       errs.push(
-        ...collectGatewayBranchTailErrors(b.path || [], {
-          gatewayPosition: ctx.gatewayPosition,
-          branchLabel: `${ctx.branchLabel} / ${subLabel}`,
-        })
+        ...collectGatewayBranchTailErrors(
+          b.path || [],
+          {
+            gatewayPosition: ctx.gatewayPosition,
+            branchLabel: `${ctx.branchLabel} / ${subLabel}`,
+          },
+          { mergeAfterForkInLane: propagateMerge }
+        )
       );
     });
     return errs;
   }
+  if (mergeAfterForkInLane) return [];
+
   const label = last.label ? `«${last.label}»` : `(${last.type})`;
   return [
     `Ветвь «${ctx.branchLabel}» шлюза на позиции ${ctx.gatewayPosition}: последний элемент ${label} не завершён — добавьте событие конца или «Переход к элементу» (требование BPMN 2.0).`,
   ];
 }
 
+function diagramHasEndEventDeep(diagram) {
+  function inTree(els) {
+    if (!els || !Array.isArray(els)) return false;
+    for (const element of els) {
+      if (!element) continue;
+      if (element.type === 'endEvent') return true;
+      if (element.branches) {
+        for (const branch of element.branches) {
+          if (branch?.path && inTree(branch.path)) return true;
+        }
+      }
+    }
+    return false;
+  }
+  for (const pool of diagram?.pools || []) {
+    for (const lane of pool.lanes || []) {
+      if (inTree(lane.elements)) return true;
+    }
+  }
+  return false;
+}
+
 /**
- * Validate process structure
+ * Линейный поток в одном списке (дорожка или path): активность не «висит» без следующего в списке и без «Переход к».
+ * @param {{ implicitMergeAtEnd?: boolean }} opts — для ветви шлюза: после шлюза в том же массиве дорожки есть продолжение (слияние).
+ */
+function validateLinearFlowContinuity(elements, errors, contextPhrase, opts = {}) {
+  if (!elements || !Array.isArray(elements)) return;
+  const implicitMergeAtEnd = Boolean(opts.implicitMergeAtEnd);
+  const prefix = contextPhrase ? `${contextPhrase} ` : '';
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (!el?.type) continue;
+    if (el.type === 'endEvent') continue;
+    if (el.type === 'startEvent') continue;
+    if (isGatewayType(el.type)) continue;
+
+    const isLast = i === elements.length - 1;
+    if (i + 1 < elements.length || hasExplicitNextElementContinuation(el)) continue;
+    if (implicitMergeAtEnd && isLast) continue;
+
+    const label = el.label?.trim() ? `«${el.label}»` : `(${el.type})`;
+    errors.push(
+      `${prefix}Элемент ${label} (позиция ${i + 1}) не имеет продолжения потока — добавьте следующий элемент, событие конца или «Переход к элементу» (BPMN 2.0).`
+    );
+  }
+}
+
+function validateNestedBranchPath(path, errors, mergeAfterParentGateway) {
+  if (!path || !Array.isArray(path)) return;
+  validateLinearFlowContinuity(path, errors, '', {
+    implicitMergeAtEnd: Boolean(mergeAfterParentGateway),
+  });
+  validateGatewaysInElementList(path, errors);
+}
+
+function validateGatewaysInElementList(elements, errors) {
+  if (!elements || !Array.isArray(elements)) return;
+
+  elements.forEach((element, index) => {
+    if (!isGatewayType(element?.type)) return;
+
+    if (!element.branches || element.branches.length === 0) {
+      errors.push(`Шлюз на позиции ${index + 1} должен иметь хотя бы одну ветвь`);
+    }
+
+    if (isParallelGatewayType(element.type)) {
+      element.branches?.forEach((branch, branchIndex) => {
+        if (!branch.path || branch.path.length === 0) {
+          errors.push(
+            `Параллельный шлюз на позиции ${index + 1}, ветвь ${branchIndex + 1} не может быть пустой`
+          );
+        }
+      });
+    }
+
+    const nextAfterGateway = elements[index + 1];
+    const mergeAfterForkInLane = Boolean(
+      nextAfterGateway && nextAfterGateway.type && nextAfterGateway.type !== 'startEvent'
+    );
+
+    element.branches?.forEach((branch, branchIndex) => {
+      if (!branch.path || branch.path.length === 0) return;
+      const branchLabel = branch.condition?.trim() || `ветвь ${branchIndex + 1}`;
+      errors.push(
+        ...collectGatewayBranchTailErrors(
+          branch.path,
+          {
+            gatewayPosition: index + 1,
+            branchLabel,
+          },
+          { mergeAfterForkInLane }
+        )
+      );
+      validateNestedBranchPath(branch.path, errors, mergeAfterForkInLane);
+    });
+  });
+}
+
+/**
+ * Валидация диаграммы с дорожками: слияние после шлюза только внутри той же дорожки (не через склейку getAllElements).
+ * @param {Object} diagram - { pools: [{ lanes: [{ elements, name }] }] }
+ */
+export function validateDiagram(diagram) {
+  const errors = [];
+  const flat = getAllElements(diagram);
+
+  if (flat.length === 0) {
+    errors.push('Процесс должен содержать хотя бы один элемент');
+    return { isValid: false, errors };
+  }
+
+  const hasStartEvent = flat.some((e) => e && e.type === 'startEvent');
+  if (!hasStartEvent) {
+    errors.push(
+      'Процесс должен иметь событие начала. Добавьте элемент "Событие начала" через кнопку "Добавить элемент"'
+    );
+  }
+
+  if (!diagramHasEndEventDeep(diagram)) {
+    errors.push(
+      'Процесс должен иметь хотя бы одно событие конца. Добавьте элемент "Событие конца" через кнопку "Добавить элемент"'
+    );
+  }
+
+  const pool = diagram?.pools?.[0];
+  const lanes = pool?.lanes || [];
+  lanes.forEach((lane, laneIdx) => {
+    const els = lane.elements || [];
+    const laneName = lane.name?.trim() || `дорожка ${laneIdx + 1}`;
+    validateLinearFlowContinuity(els, errors, `В дорожке «${laneName}»:`);
+    validateGatewaysInElementList(els, errors);
+  });
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * Validate process structure (плоский список элементов одной последовательности, без склейки дорожек)
  * @param {Array} process - Process elements array
  * @param {Boolean} isTopLevel - Whether this is the top-level process (not nested)
  * @returns {Object} Validation result with isValid and errors
@@ -1710,18 +1870,15 @@ export function validateProcess(process, isTopLevel = true) {
     return { isValid: errors.length === 0, errors };
   }
 
-  // Check for start event and end event only at top level
   if (isTopLevel) {
-    // Check for start event - must be in the main process flow (not in nested branches)
     const hasStartEvent = process.some((e) => e && e.type === 'startEvent');
     if (!hasStartEvent) {
-      errors.push('Процесс должен иметь событие начала. Добавьте элемент "Событие начала" через кнопку "Добавить элемент"');
+      errors.push(
+        'Процесс должен иметь событие начала. Добавьте элемент "Событие начала" через кнопку "Добавить элемент"'
+      );
     }
 
-    // Check for end event - check in main process and all nested branches
     let hasEndEvent = process.some((e) => e && e.type === 'endEvent');
-
-    // Also check in nested branches recursively
     if (!hasEndEvent) {
       const checkNestedForEndEvent = (elements) => {
         if (!elements || !Array.isArray(elements)) return false;
@@ -1743,53 +1900,14 @@ export function validateProcess(process, isTopLevel = true) {
     }
 
     if (!hasEndEvent) {
-      errors.push('Процесс должен иметь хотя бы одно событие конца. Добавьте элемент "Событие конца" через кнопку "Добавить элемент"');
+      errors.push(
+        'Процесс должен иметь хотя бы одно событие конца. Добавьте элемент "Событие конца" через кнопку "Добавить элемент"'
+      );
     }
   }
 
-  // Validate gateways
-  process.forEach((element, index) => {
-    if (isGatewayType(element.type)) {
-      if (!element.branches || element.branches.length === 0) {
-        errors.push(`Шлюз на позиции ${index + 1} должен иметь хотя бы одну ветвь`);
-      }
-
-      if (isParallelGatewayType(element.type)) {
-        element.branches?.forEach((branch, branchIndex) => {
-          if (!branch.path || branch.path.length === 0) {
-            errors.push(
-              `Параллельный шлюз на позиции ${index + 1}, ветвь ${branchIndex + 1} не может быть пустой`
-            );
-          }
-        });
-      }
-
-      element.branches?.forEach((branch, branchIndex) => {
-        if (!branch.path || branch.path.length === 0) return;
-        const branchLabel = branch.condition?.trim() || `ветвь ${branchIndex + 1}`;
-        errors.push(
-          ...collectGatewayBranchTailErrors(branch.path, {
-            gatewayPosition: index + 1,
-            branchLabel,
-          })
-        );
-      });
-
-      // Validate nested structures (but don't require start/end events in nested branches)
-      element.branches?.forEach((branch) => {
-        if (branch.path) {
-          const nestedValidation = validateProcess(branch.path, false);
-          if (!nestedValidation.isValid) {
-            // Filter out start/end event errors from nested validation
-            const nestedErrors = nestedValidation.errors.filter(
-              (err) => !err.includes('событие начала') && !err.includes('событие конца')
-            );
-            errors.push(...nestedErrors);
-          }
-        }
-      });
-    }
-  });
+  validateLinearFlowContinuity(process, errors, '');
+  validateGatewaysInElementList(process, errors);
 
   return {
     isValid: errors.length === 0,
