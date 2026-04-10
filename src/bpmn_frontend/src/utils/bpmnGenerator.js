@@ -366,10 +366,11 @@ export function generateBpmnXml(diagramOrProcess) {
       }
     });
 
-    // Переходы на другую дорожку: если у элемента задан nextElementId, добавляем flow к этому элементу
+    // Явные переходы nextElementId (в т.ч. на другую дорожку): верхний уровень дорожек и вложенные ветки шлюзов
     const isGatewayTypeCheck = (t) => isGatewayType(t);
-    pool.lanes?.forEach((lane) => {
-      (lane.elements || []).forEach((el) => {
+    function addFlowsFromNextElementIdTree(elements) {
+      if (!elements) return;
+      elements.forEach((el) => {
         if (
           el.nextElementId &&
           el.id &&
@@ -379,7 +380,15 @@ export function generateBpmnXml(diagramOrProcess) {
         ) {
           addFlow(el.id, el.nextElementId);
         }
+        if (el.branches) {
+          el.branches.forEach((branch) => {
+            addFlowsFromNextElementIdTree(branch.path);
+          });
+        }
       });
+    }
+    pool.lanes?.forEach((lane) => {
+      addFlowsFromNextElementIdTree(lane.elements);
     });
 
     // Карта: элемент (id) → индекс ветки (0, 1, …) для элементов внутри gateway.branches[].path в одной дорожке
@@ -921,69 +930,6 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
 
         laneYAcc += laneHeight;
       });
-
-      // Междорожечные потоки: цель выравнивается по X под центром источника; внутри дорожки — цепочка с GAP.
-      // Два прохода: после первого обновляются нижние дорожки, второй подхватывает «вверх по потоку» от уже сдвинутых источников.
-      if (lanes.length >= 2 && processInfo) {
-        const elementByIdAlign = new Map((processInfo.elements || []).map((e) => [e.id, e]));
-        const processElIds = new Set((processInfo.elements || []).map((e) => e.id));
-        const laneInnerLeft = participantX + 40;
-
-        for (let pass = 0; pass < 2; pass++) {
-          const preferredCenterX = new Map();
-          sequenceFlows.forEach((f) => {
-            if (!processElIds.has(f.sourceRef) || !processElIds.has(f.targetRef)) return;
-            if (f.sourceRef.endsWith('-join') || f.targetRef.endsWith('-join')) return;
-            const sl = laneIdByElement.get(f.sourceRef);
-            const tl = laneIdByElement.get(f.targetRef);
-            if (!sl || !tl || sl === tl) return;
-            const sp = elementPositionMap.get(f.sourceRef);
-            if (!sp || typeof sp.x !== 'number') return;
-            if (!preferredCenterX.has(f.targetRef)) {
-              preferredCenterX.set(f.targetRef, sp.x);
-            }
-          });
-
-          lanes.forEach((lane) => {
-            const elems = processInfo.laneElementMap.get(lane.id) || [];
-            const lb = laneBounds.get(lane.id);
-            const centerY = lb ? lb.y + lb.h / 2 : participantY + participantHeight / 2;
-            elems.forEach((elemId, idx) => {
-              if (elemId.endsWith('-join')) return;
-              const el = elementByIdAlign.get(elemId);
-              const { w } = diShapeSizeForLayout(el?.type);
-              let cx;
-              if (preferredCenterX.has(elemId)) {
-                cx = preferredCenterX.get(elemId);
-              } else if (idx === 0) {
-                const cur = elementPositionMap.get(elemId);
-                cx = typeof cur?.x === 'number' ? cur.x : laneInnerLeft + 100;
-              } else {
-                const prevId = elems[idx - 1];
-                const prevP = elementPositionMap.get(prevId);
-                const prevE = elementByIdAlign.get(prevId);
-                const { w: pw } = diShapeSizeForLayout(prevE?.type);
-                if (!prevP || typeof prevP.x !== 'number') {
-                  cx = laneInnerLeft + 100;
-                } else {
-                  cx = prevP.x + pw / 2 + LANE_FLOW_GAP_X + w / 2;
-                }
-              }
-              if (idx > 0) {
-                const prevId = elems[idx - 1];
-                const prevP = elementPositionMap.get(prevId);
-                const prevE = elementByIdAlign.get(prevId);
-                const { w: pw } = diShapeSizeForLayout(prevE?.type);
-                if (prevP && typeof prevP.x === 'number') {
-                  const minCx = prevP.x + pw / 2 + LANE_FLOW_GAP_X + w / 2;
-                  if (cx < minCx) cx = minCx;
-                }
-              }
-              elementPositionMap.set(elemId, { x: cx, y: centerY });
-            });
-          });
-        }
-      }
     } else {
       const laneHeight = participantHeight;
       const laneY = participantY;
@@ -1166,6 +1112,130 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     }
   }
 
+  /**
+   * После финальных X веток (колонки): междорожечная цель по центру под источником.
+   * nextElementId в дереве пула имеет приоритет над sequenceFlows. Y не трогаем — сохраняем ряды веток.
+   */
+  function applyCrossLaneHorizontalRealign(processInfo) {
+    const lanes = processInfo?.lanes || [];
+    if (lanes.length < 2 || !processInfo) return;
+    const elementByIdAlign = new Map((processInfo.elements || []).map((e) => [e.id, e]));
+    const processElIds = new Set((processInfo.elements || []).map((e) => e.id));
+    const ppos = participantPosByProcess.get(processInfo.processId);
+    const laneInnerLeft = (ppos?.x ?? 0) + 40;
+    const fallbackY = ppos ? ppos.y + ppos.h / 2 : 200;
+
+    const walkNextElementCrossLane = (elements, preferredCenterX) => {
+      if (!elements) return;
+      elements.forEach((el) => {
+        if (
+          el?.id &&
+          el.nextElementId &&
+          String(el.nextElementId).trim() &&
+          processElIds.has(el.nextElementId)
+        ) {
+          const sl = laneIdByElement.get(el.id);
+          const tl = laneIdByElement.get(el.nextElementId);
+          if (sl && tl && sl !== tl) {
+            const sp = elementPositionMap.get(el.id);
+            if (sp && typeof sp.x === 'number') {
+              preferredCenterX.set(el.nextElementId, sp.x);
+            }
+          }
+        }
+        el.branches?.forEach((b) => walkNextElementCrossLane(b.path, preferredCenterX));
+      });
+    };
+
+    for (let pass = 0; pass < 2; pass++) {
+      const preferredCenterX = new Map();
+      processInfo.pool?.lanes?.forEach((lane) => walkNextElementCrossLane(lane.elements, preferredCenterX));
+
+      sequenceFlows.forEach((f) => {
+        if (!processElIds.has(f.sourceRef) || !processElIds.has(f.targetRef)) return;
+        if (f.sourceRef.endsWith('-join') || f.targetRef.endsWith('-join')) return;
+        const sl = laneIdByElement.get(f.sourceRef);
+        const tl = laneIdByElement.get(f.targetRef);
+        if (!sl || !tl || sl === tl) return;
+        const sp = elementPositionMap.get(f.sourceRef);
+        if (!sp || typeof sp.x !== 'number') return;
+        if (!preferredCenterX.has(f.targetRef)) {
+          preferredCenterX.set(f.targetRef, sp.x);
+        }
+      });
+
+      lanes.forEach((lane) => {
+        const elems = processInfo.laneElementMap.get(lane.id) || [];
+        const lb = laneBounds.get(lane.id);
+        const centerY = lb ? lb.y + lb.h / 2 : fallbackY;
+        elems.forEach((elemId, idx) => {
+          if (elemId.endsWith('-join')) return;
+          const el = elementByIdAlign.get(elemId);
+          const { w } = diShapeSizeForLayout(el?.type);
+          let cx;
+          if (preferredCenterX.has(elemId)) {
+            cx = preferredCenterX.get(elemId);
+          } else if (idx === 0) {
+            const cur = elementPositionMap.get(elemId);
+            cx = typeof cur?.x === 'number' ? cur.x : laneInnerLeft + 100;
+          } else {
+            const prevId = elems[idx - 1];
+            const prevP = elementPositionMap.get(prevId);
+            const prevE = elementByIdAlign.get(prevId);
+            const { w: pw } = diShapeSizeForLayout(prevE?.type);
+            if (!prevP || typeof prevP.x !== 'number') {
+              cx = laneInnerLeft + 100;
+            } else {
+              cx = prevP.x + pw / 2 + LANE_FLOW_GAP_X + w / 2;
+            }
+          }
+          if (idx > 0) {
+            const prevId = elems[idx - 1];
+            const prevP = elementPositionMap.get(prevId);
+            const prevE = elementByIdAlign.get(prevId);
+            const { w: pw } = diShapeSizeForLayout(prevE?.type);
+            if (prevP && typeof prevP.x === 'number') {
+              const minCx = prevP.x + pw / 2 + LANE_FLOW_GAP_X + w / 2;
+              if (cx < minCx) cx = minCx;
+            }
+          }
+          const prevPos = elementPositionMap.get(elemId);
+          const cy = prevPos && typeof prevPos.y === 'number' ? prevPos.y : centerY;
+          elementPositionMap.set(elemId, { x: cx, y: cy });
+        });
+      });
+    }
+  }
+
+  function syncShapesFromElementPositions(processInfo) {
+    processInfo.elements.forEach((el) => {
+      if (!el.id || el.id.endsWith('-join')) return;
+      const pos = elementPositionMap.get(el.id);
+      const size = elementSizeMap.get(el.id);
+      if (!pos || !size) return;
+      let x = pos.x - size.w / 2;
+      let y = pos.y - size.h / 2;
+      const elLaneId = laneIdByElement.get(el.id);
+      const elLaneBox = elLaneId ? laneBounds.get(elLaneId) : null;
+      if (elLaneBox) {
+        const minY = elLaneBox.y + 5;
+        const maxY = elLaneBox.y + elLaneBox.h - size.h - 5;
+        if (y < minY) y = minY;
+        if (y > maxY) y = maxY;
+      }
+      if (y < 0) y = 0;
+      elementPositionMap.set(el.id, { x: x + size.w / 2, y: y + size.h / 2 });
+      replaceBpmnShapeBounds(planeShapes, el.id, x, y, size.w, size.h);
+    });
+  }
+
+  processes.forEach((processInfo) => {
+    if ((processInfo.lanes || []).length >= 2) {
+      applyCrossLaneHorizontalRealign(processInfo);
+      syncShapesFromElementPositions(processInfo);
+    }
+  });
+
   // Join-шлюз: вторая колонка на том же шаге, что и fork→ветка (2×COLUMN_SPACING от центра fork), чтобы горизонтальные сегменты были ровными
   const JOIN_GAP = 52;
   processes.forEach((processInfo) => {
@@ -1269,6 +1339,13 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         curId = nextFlows[0].targetRef;
       }
     });
+  });
+
+  processes.forEach((processInfo) => {
+    if ((processInfo.lanes || []).length >= 2) {
+      applyCrossLaneHorizontalRealign(processInfo);
+      syncShapesFromElementPositions(processInfo);
+    }
   });
 
   processes.forEach((processInfo) => {
@@ -1584,6 +1661,39 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
+function hasExplicitNextElementContinuation(el) {
+  return el && el.nextElementId && String(el.nextElementId).trim().length > 0;
+}
+
+/**
+ * Хвост ветви шлюза: не «висящая» активность — либо конец, либо явный переход вне ветви, либо вложенный шлюз с корректными хвостами.
+ */
+function collectGatewayBranchTailErrors(path, ctx) {
+  if (!path || path.length === 0) return [];
+  const last = path[path.length - 1];
+  if (!last) return [];
+  if (last.type === 'endEvent') return [];
+  if (hasExplicitNextElementContinuation(last)) return [];
+  if (isGatewayType(last.type)) {
+    if (!last.branches || last.branches.length === 0) return [];
+    const errs = [];
+    last.branches.forEach((b, bi) => {
+      const subLabel = b.condition?.trim() || `${bi + 1}`;
+      errs.push(
+        ...collectGatewayBranchTailErrors(b.path || [], {
+          gatewayPosition: ctx.gatewayPosition,
+          branchLabel: `${ctx.branchLabel} / ${subLabel}`,
+        })
+      );
+    });
+    return errs;
+  }
+  const label = last.label ? `«${last.label}»` : `(${last.type})`;
+  return [
+    `Ветвь «${ctx.branchLabel}» шлюза на позиции ${ctx.gatewayPosition}: последний элемент ${label} не завершён — добавьте событие конца или «Переход к элементу» (требование BPMN 2.0).`,
+  ];
+}
+
 /**
  * Validate process structure
  * @param {Array} process - Process elements array
@@ -1653,6 +1763,17 @@ export function validateProcess(process, isTopLevel = true) {
           }
         });
       }
+
+      element.branches?.forEach((branch, branchIndex) => {
+        if (!branch.path || branch.path.length === 0) return;
+        const branchLabel = branch.condition?.trim() || `ветвь ${branchIndex + 1}`;
+        errors.push(
+          ...collectGatewayBranchTailErrors(branch.path, {
+            gatewayPosition: index + 1,
+            branchLabel,
+          })
+        );
+      });
 
       // Validate nested structures (but don't require start/end events in nested branches)
       element.branches?.forEach((branch) => {

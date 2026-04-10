@@ -49,9 +49,9 @@
       />
     </div>
 
-    <!-- Переход к элементу на другой дорожке (только для элементов верхнего уровня, не шлюз и не конец) -->
+    <!-- Переход к элементу (в т.ч. другая дорожка или элемент вне текущей ветки); не шлюз и не конец -->
     <div
-      v-if="!isNested && canHaveNextElement && nextElementOptions.length > 0"
+      v-if="canHaveNextElement && nextElementOptions.length > 0"
       class="next-element-row"
     >
       <span class="next-element-label">Переход к:</span>
@@ -300,18 +300,35 @@ export default {
         props.element.type !== 'endEvent'
     );
 
-    /** Список элементов пула для выбора «Переход к» (все элементы из всех дорожек, кроме текущего) */
+    /** Все узлы пула (дорожки + вложенные ветки шлюзов), кроме текущего — для «Переход к» */
     const nextElementOptions = computed(() => {
       const poolData = props.pool && props.pool.lanes ? props.pool : null;
       const lanes = poolData ? poolData.lanes : Array.isArray(props.lanes) ? props.lanes : [];
       const options = [];
+      const selfId = props.element.id;
+
+      function pushOptions(el, laneName, pathSuffix) {
+        if (!el || !el.id || el.id === selfId) return;
+        const label = (el.label && String(el.label).trim()) || getElementTypeLabel(el.type || 'task');
+        const title = pathSuffix
+          ? `${label} — ${laneName} · ${pathSuffix}`
+          : `${label} — ${laneName}`;
+        options.push({ value: el.id, title });
+        if (el.branches) {
+          el.branches.forEach((branch, idx) => {
+            const cond = branch.condition && String(branch.condition).trim();
+            const seg = cond || `ветка ${idx + 1}`;
+            const nextSuffix = pathSuffix ? `${pathSuffix} › ${seg}` : seg;
+            (branch.path || []).forEach((child) => {
+              pushOptions(child, laneName, nextSuffix);
+            });
+          });
+        }
+      }
+
       lanes.forEach((lane) => {
         const laneName = lane.name || lane.id || 'Дорожка';
-        (lane.elements || []).forEach((el) => {
-          if (!el || el.id === props.element.id) return;
-          const label = (el.label && String(el.label).trim()) || getElementTypeLabel(el.type || 'task');
-          options.push({ value: el.id, title: `${label} — ${laneName}` });
-        });
+        (lane.elements || []).forEach((el) => pushOptions(el, laneName, ''));
       });
       return options;
     });
