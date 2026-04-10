@@ -3,6 +3,8 @@
  * Диаграмма «Процесс» — один пул с дорожками (lanes) и элементами.
  */
 
+import { isDivergingGatewayType, isParallelGatewayType } from './bpmnPalette.js';
+
 /**
  * Create a new pool (один пул на диаграмму «Процесс»)
  */
@@ -104,12 +106,8 @@ export function createElement(type, label = '') {
   };
 
   // Initialize gateway branches
-  if (
-    type === 'exclusiveGateway' ||
-    type === 'inclusiveGateway' ||
-    type === 'parallelGateway'
-  ) {
-    if (type === 'exclusiveGateway') {
+  if (isDivergingGatewayType(type)) {
+    if (type === 'exclusiveGateway' || type === 'eventBasedGateway') {
       element.branches = [
         { condition: 'Да', path: [], isDefault: false },
         { condition: 'Нет', path: [], isDefault: false },
@@ -117,6 +115,8 @@ export function createElement(type, label = '') {
     } else {
       element.branches = [{ condition: '', path: [], isDefault: false }];
     }
+  } else if (isParallelGatewayType(type)) {
+    element.branches = [{ condition: '', path: [], isDefault: false }];
   }
 
   return element;

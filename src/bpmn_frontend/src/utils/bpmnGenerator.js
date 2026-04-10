@@ -4,6 +4,12 @@
  */
 
 import { migrateToDiagramModel, createEmptyDiagram } from './diagramModel.js';
+import {
+  isGatewayType,
+  isParallelGatewayType,
+  isDivergingGatewayType,
+  TASK_LIKE_TYPES,
+} from './bpmnPalette.js';
 
 let elementIdCounter = 1;
 let flowIdCounter = 1;
@@ -14,6 +20,13 @@ function generateId(prefix = 'element') {
 
 function generateFlowId(source, target) {
   return `flow_${flowIdCounter++}`;
+}
+
+/** Размеры фигуры в BPMNDI (в elementPositionMap хранится центр узла). */
+function diShapeSizeForLayout(type) {
+  if (type && String(type).includes('Gateway')) return { w: 50, h: 50 };
+  if (TASK_LIKE_TYPES.has(type)) return { w: 100, h: 80 };
+  return { w: 36, h: 36 };
 }
 
 /**
@@ -118,9 +131,9 @@ export function generateBpmnXml(diagramOrProcess) {
       elementMap.set(elemId, transformedElement);
 
       // Handle different element types
-      if (element.type === 'exclusiveGateway' || element.type === 'inclusiveGateway') {
+      if (isDivergingGatewayType(element.type)) {
         handleGateway(element, transformedElement, nextElementId, transformedElements);
-      } else if (element.type === 'parallelGateway') {
+      } else if (isParallelGatewayType(element.type)) {
         handleParallelGateway(element, transformedElement, nextElementId, transformedElements);
       } else if (nextElementId && element.type !== 'endEvent') {
         // Если задан явный переход (nextElementId) — не добавляем переход «следующий в дорожке»; он будет добавлен в проходе cross-lane
@@ -354,14 +367,13 @@ export function generateBpmnXml(diagramOrProcess) {
     });
 
     // Переходы на другую дорожку: если у элемента задан nextElementId, добавляем flow к этому элементу
-    const isGatewayType = (t) =>
-      t === 'exclusiveGateway' || t === 'inclusiveGateway' || t === 'parallelGateway';
+    const isGatewayTypeCheck = (t) => isGatewayType(t);
     pool.lanes?.forEach((lane) => {
       (lane.elements || []).forEach((el) => {
         if (
           el.nextElementId &&
           el.id &&
-          !isGatewayType(el.type) &&
+          !isGatewayTypeCheck(el.type) &&
           el.type !== 'endEvent' &&
           elementMap.has(el.nextElementId)
         ) {
@@ -439,7 +451,7 @@ export function generateBpmnXml(diagramOrProcess) {
               prevElemId = prevElement.id;
 
               // If previous element is a gateway, check for join gateway
-              if (prevElement.type === 'exclusiveGateway' || prevElement.type === 'inclusiveGateway') {
+              if (isGatewayType(prevElement.type)) {
                 const joinGatewayId = `${prevElement.id}-join`;
                 if (elementMap.has(joinGatewayId)) {
                   prevElemId = joinGatewayId;
@@ -547,33 +559,7 @@ function buildXml(elements, flows, processInfo = null) {
 
   // Add elements
   elements.forEach((element) => {
-    const tagName = mapElementTypeToTag(element.type);
-    xml += `    <${tagName} id="${element.id}"`;
-    if (element.label) {
-      xml += ` name="${escapeXml(element.label)}"`;
-    }
-    if (element.defaultFlow) {
-      xml += ` default="${element.defaultFlow}"`;
-    }
-    xml += `>\n`;
-
-    // Add incoming flows
-    element.incoming.forEach((flowId) => {
-      xml += `      <incoming>${flowId}</incoming>\n`;
-    });
-
-    // Add outgoing flows
-    element.outgoing.forEach((flowId) => {
-      xml += `      <outgoing>${flowId}</outgoing>\n`;
-    });
-
-    // Add event definition if present
-    if (element.eventDefinition) {
-      const eventDefTag = mapEventDefinitionToTag(element.eventDefinition);
-      xml += `      <${eventDefTag} id="${eventDefTag}_${element.id}"/>\n`;
-    }
-
-    xml += `    </${tagName}>\n`;
+    xml += buildFlowNodeXml(element, '    ');
   });
 
   // Add sequence flows
@@ -641,33 +627,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
 
     // Add elements
     processInfo.elements.forEach((element) => {
-      const tagName = mapElementTypeToTag(element.type);
-      xml += `    <${tagName} id="${element.id}"`;
-      if (element.label) {
-        xml += ` name="${escapeXml(element.label)}"`;
-      }
-      if (element.defaultFlow) {
-        xml += ` default="${element.defaultFlow}"`;
-      }
-      xml += `>\n`;
-
-      // Add incoming flows
-      element.incoming.forEach((flowId) => {
-        xml += `      <incoming>${flowId}</incoming>\n`;
-      });
-
-      // Add outgoing flows
-      element.outgoing.forEach((flowId) => {
-        xml += `      <outgoing>${flowId}</outgoing>\n`;
-      });
-
-      // Add event definition if present
-      if (element.eventDefinition) {
-        const eventDefTag = mapEventDefinitionToTag(element.eventDefinition);
-        xml += `      <${eventDefTag} id="${eventDefTag}_${element.id}"/>\n`;
-      }
-
-      xml += `    </${tagName}>\n`;
+      xml += buildFlowNodeXml(element, '    ');
     });
 
     // Add sequence flows for this process (filter flows by elements in this process)
@@ -702,9 +662,12 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
   const laneIdByElement = new Map(); // elementId -> laneId
   /** Для пересчёта dc:Bounds пула/дорожек после финальной раскладки узлов */
   const participantDiMeta = [];
-  /** Горизонтальный шаг узлов в дорожке (линейный порядок); меньше — компактнее диаграмма */
-  const LANE_FLOW_STEP_X = 120;
-  /** Колонки после шлюза: чуть длиннее обычного шага, чтобы ветви читались, но без раздувания */
+  /**
+   * Равномерный зазор между соседними элементами в линейном потоке (правый край → левый край).
+   * Раньше центры шли с шагом 120px при ширине задачи 100px → зазор 20px; у события 36px → 52px.
+   */
+  const LANE_FLOW_GAP_X = 52;
+  /** Колонки после шлюза: расстояние между развилками (не линейный поток) */
   const COLUMN_SPACING = 172;
 
   /** @param {string} [attrs] - optional attributes for BPMNShape, e.g. ' isHorizontal="true"' */
@@ -875,9 +838,22 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         const nBranchRows = sortedBranchIndices.length;
         const laneIdSet = new Set(laneElements);
 
+        const elementByIdForLayout = new Map((processInfo?.elements || []).map((e) => [e.id, e]));
+
         laneElements.forEach((elemId, idx) => {
           laneIdByElement.set(elemId, lane.id);
-          const x = laneX + 100 + idx * LANE_FLOW_STEP_X;
+          const elMeta = elementByIdForLayout.get(elemId);
+          const { w } = diShapeSizeForLayout(elMeta?.type);
+          let x;
+          if (idx === 0) {
+            x = laneX + 100;
+          } else {
+            const prevId = laneElements[idx - 1];
+            const prevPos = elementPositionMap.get(prevId);
+            const prevMeta = elementByIdForLayout.get(prevId);
+            const { w: pw } = diShapeSizeForLayout(prevMeta?.type);
+            x = prevPos.x + pw / 2 + LANE_FLOW_GAP_X + w / 2;
+          }
           let y;
           if (sameLaneMultipleBranches && nBranchRows >= 2) {
             const branchIndex = elementToBranchIndex?.get(elemId);
@@ -892,16 +868,9 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
             const maxY = laneY + laneHeight - 30;
             if (y < minY) y = minY;
             if (y > maxY) y = maxY;
-          } else if (laneElements.length <= 4) {
-            y = laneY + laneHeight / 2;
           } else {
-            const step = Math.max(50, (laneHeight - 80) / Math.max(1, laneElements.length));
-            const yStart = laneY + 40;
-            y = yStart + idx * step;
-            const minY = laneY + 30;
-            const maxY = laneY + laneHeight - 30;
-            if (y < minY) y = minY;
-            if (y > maxY) y = maxY;
+            // Один линейный ряд по центру дорожки (любое число элементов — без «лесенки»)
+            y = laneY + laneHeight / 2;
           }
           elementPositionMap.set(elemId, { x, y });
         });
@@ -952,6 +921,69 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
 
         laneYAcc += laneHeight;
       });
+
+      // Междорожечные потоки: цель выравнивается по X под центром источника; внутри дорожки — цепочка с GAP.
+      // Два прохода: после первого обновляются нижние дорожки, второй подхватывает «вверх по потоку» от уже сдвинутых источников.
+      if (lanes.length >= 2 && processInfo) {
+        const elementByIdAlign = new Map((processInfo.elements || []).map((e) => [e.id, e]));
+        const processElIds = new Set((processInfo.elements || []).map((e) => e.id));
+        const laneInnerLeft = participantX + 40;
+
+        for (let pass = 0; pass < 2; pass++) {
+          const preferredCenterX = new Map();
+          sequenceFlows.forEach((f) => {
+            if (!processElIds.has(f.sourceRef) || !processElIds.has(f.targetRef)) return;
+            if (f.sourceRef.endsWith('-join') || f.targetRef.endsWith('-join')) return;
+            const sl = laneIdByElement.get(f.sourceRef);
+            const tl = laneIdByElement.get(f.targetRef);
+            if (!sl || !tl || sl === tl) return;
+            const sp = elementPositionMap.get(f.sourceRef);
+            if (!sp || typeof sp.x !== 'number') return;
+            if (!preferredCenterX.has(f.targetRef)) {
+              preferredCenterX.set(f.targetRef, sp.x);
+            }
+          });
+
+          lanes.forEach((lane) => {
+            const elems = processInfo.laneElementMap.get(lane.id) || [];
+            const lb = laneBounds.get(lane.id);
+            const centerY = lb ? lb.y + lb.h / 2 : participantY + participantHeight / 2;
+            elems.forEach((elemId, idx) => {
+              if (elemId.endsWith('-join')) return;
+              const el = elementByIdAlign.get(elemId);
+              const { w } = diShapeSizeForLayout(el?.type);
+              let cx;
+              if (preferredCenterX.has(elemId)) {
+                cx = preferredCenterX.get(elemId);
+              } else if (idx === 0) {
+                const cur = elementPositionMap.get(elemId);
+                cx = typeof cur?.x === 'number' ? cur.x : laneInnerLeft + 100;
+              } else {
+                const prevId = elems[idx - 1];
+                const prevP = elementPositionMap.get(prevId);
+                const prevE = elementByIdAlign.get(prevId);
+                const { w: pw } = diShapeSizeForLayout(prevE?.type);
+                if (!prevP || typeof prevP.x !== 'number') {
+                  cx = laneInnerLeft + 100;
+                } else {
+                  cx = prevP.x + pw / 2 + LANE_FLOW_GAP_X + w / 2;
+                }
+              }
+              if (idx > 0) {
+                const prevId = elems[idx - 1];
+                const prevP = elementPositionMap.get(prevId);
+                const prevE = elementByIdAlign.get(prevId);
+                const { w: pw } = diShapeSizeForLayout(prevE?.type);
+                if (prevP && typeof prevP.x === 'number') {
+                  const minCx = prevP.x + pw / 2 + LANE_FLOW_GAP_X + w / 2;
+                  if (cx < minCx) cx = minCx;
+                }
+              }
+              elementPositionMap.set(elemId, { x: cx, y: centerY });
+            });
+          });
+        }
+      }
     } else {
       const laneHeight = participantHeight;
       const laneY = participantY;
@@ -961,7 +993,16 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       laneMetaForParticipant.push({ bpmnElement: participant.id, x: laneX, y: laneY, w: laneWidth, h: laneHeight });
       const processElements = processInfo?.elements || [];
       processElements.forEach((el, idx) => {
-        const x = laneX + 70 + idx * Math.round(LANE_FLOW_STEP_X * 0.78);
+        const { w } = diShapeSizeForLayout(el.type);
+        let x;
+        if (idx === 0) {
+          x = laneX + 70;
+        } else {
+          const prev = processElements[idx - 1];
+          const prevPos = elementPositionMap.get(prev.id);
+          const { w: pw } = diShapeSizeForLayout(prev.type);
+          x = prevPos.x + pw / 2 + LANE_FLOW_GAP_X + w / 2;
+        }
         const y = laneY + laneHeight / 2;
         elementPositionMap.set(el.id, { x, y });
       });
@@ -1050,18 +1091,35 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         const laneId = laneIdByElement.get(element.id);
         const laneBox = laneId ? laneBounds.get(laneId) : null;
         const laneElems = laneId ? processInfo.laneElementMap?.get(laneId) || [] : [];
-        const xs = laneElems
-          .map((id) => elementPositionMap.get(id)?.x)
-          .filter((v) => typeof v === 'number');
-        const baseX = xs.length > 0 ? Math.max(...xs) + Math.round(LANE_FLOW_STEP_X * 0.75) : (laneBox ? laneBox.x + 120 : participantPos ? participantPos.x + 100 : 100);
+        let baseX;
+        if (laneElems.length > 0) {
+          let maxCenterX = -Infinity;
+          let rightmostId = null;
+          laneElems.forEach((id) => {
+            const px = elementPositionMap.get(id)?.x;
+            if (typeof px === 'number' && px > maxCenterX) {
+              maxCenterX = px;
+              rightmostId = id;
+            }
+          });
+          if (rightmostId != null && Number.isFinite(maxCenterX)) {
+            const lastInLane = processInfo.elements.find((e) => e.id === rightmostId);
+            const { w: lw } = diShapeSizeForLayout(lastInLane?.type);
+            const { w: cw } = diShapeSizeForLayout(element.type);
+            baseX = maxCenterX + lw / 2 + LANE_FLOW_GAP_X + cw / 2;
+          } else {
+            baseX = laneBox ? laneBox.x + 120 : participantPos ? participantPos.x + 100 : 100;
+          }
+        } else {
+          baseX = laneBox ? laneBox.x + 120 : participantPos ? participantPos.x + 100 : 100;
+        }
         const baseY = laneBox ? laneBox.y + laneBox.h / 2 : participantPos ? participantPos.y + participantPos.h / 2 : 200;
         finalPos = { x: baseX, y: baseY };
         elementPositionMap.set(element.id, finalPos);
         fallbackIndexByProcess.set(processInfo.processId, (fallbackIndexByProcess.get(processInfo.processId) || 0) + 1);
       }
+      const { w, h } = diShapeSizeForLayout(element.type);
       const isGateway = element.type && element.type.includes('Gateway');
-      const w = isGateway ? 50 : (element.type === 'task' ? 100 : 36);
-      const h = isGateway ? 50 : (element.type === 'task' ? 80 : 36);
       let x = finalPos.x - w / 2;
       let y = finalPos.y - h / 2;
       const elLaneId = laneIdByElement.get(element.id);
@@ -1078,7 +1136,6 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
           centerX = Math.round((gatewayPos.x + (branchData.depth + 1) * COLUMN_SPACING) * 10) / 10;
           x = centerX - w / 2;
         }
-        elementPositionMap.set(element.id, { x: centerX, y: centerY });
       }
       if (elLaneBox) {
         const minY = elLaneBox.y + 5;
@@ -1087,6 +1144,8 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         if (y > maxY) y = maxY;
       }
       if (y < 0) y = 0;
+      // Центры для рёбер BPMNEdge должны совпадать с dc:Bounds после clamp по дорожке
+      elementPositionMap.set(element.id, { x: x + w / 2, y: y + h / 2 });
       elementSizeMap.set(element.id, { w, h });
       const nodeAttrs = isGateway ? ' isMarkerVisible="true"' : '';
       pushShape(`Node_${element.id}`, element.id, x, y, w, h, nodeAttrs);
@@ -1137,7 +1196,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     });
   });
 
-  // Линейный хвост после join (join → задача → … → конец): те же шаги по центрам, что и на основной линии (LANE_FLOW_STEP_X)
+  // Линейный хвост после join (join → задача → … → конец): тот же зазор LANE_FLOW_GAP_X между фигурами
   processes.forEach((processInfo) => {
     const processElementIds = new Set(processInfo.elements.map((e) => e.id));
     processInfo.elements.forEach((element) => {
@@ -1148,11 +1207,13 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         (f) => f.sourceRef === element.id && processElementIds.has(f.targetRef)
       );
       if (outFlows.length !== 1) return;
-      const laneId = laneIdByElement.get(element.id);
-      const laneBox = laneId ? laneBounds.get(laneId) : null;
-      const laneMidY = laneBox ? laneBox.y + laneBox.h / 2 : joinPos.y;
+      const joinLaneId = laneIdByElement.get(element.id);
+      const joinLaneBox = joinLaneId ? laneBounds.get(joinLaneId) : null;
+      const joinLaneMidY = joinLaneBox ? joinLaneBox.y + joinLaneBox.h / 2 : joinPos.y;
 
       let prevCenterX = joinPos.x;
+      let prevW = 50;
+      let prevId = element.id;
       let curId = outFlows[0].targetRef;
       const visited = new Set();
       while (curId && !visited.has(curId)) {
@@ -1160,24 +1221,45 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         const el = processInfo.elements.find((e) => e.id === curId);
         if (!el) break;
         if (el.id.endsWith('-join')) break;
-        prevCenterX += LANE_FLOW_STEP_X;
-        const isGateway = el.type && el.type.includes('Gateway');
-        const w = isGateway ? 50 : (el.type === 'task' ? 100 : 36);
-        const h = isGateway ? 50 : (el.type === 'task' ? 80 : 36);
-        const centerY = laneMidY;
-        elementPositionMap.set(curId, { x: prevCenterX, y: centerY });
-        elementSizeMap.set(curId, { w, h });
-        let x = prevCenterX - w / 2;
+        const { w, h } = diShapeSizeForLayout(el.type);
+        const prevLane = laneIdByElement.get(prevId);
+        const curLane = laneIdByElement.get(curId);
+        const crossLaneFromPrev =
+          prevLane &&
+          curLane &&
+          prevLane !== curLane &&
+          sequenceFlows.some(
+            (f) =>
+              f.sourceRef === prevId &&
+              f.targetRef === curId &&
+              processElementIds.has(f.sourceRef) &&
+              processElementIds.has(f.targetRef)
+          );
+        const prevPosForX = elementPositionMap.get(prevId);
+        let centerX;
+        if (crossLaneFromPrev && prevPosForX && typeof prevPosForX.x === 'number') {
+          centerX = prevPosForX.x;
+        } else {
+          centerX = prevCenterX + prevW / 2 + LANE_FLOW_GAP_X + w / 2;
+        }
+        prevCenterX = centerX;
+        prevW = w;
+        prevId = curId;
+        const curLaneId = laneIdByElement.get(curId);
+        const curLaneBox = curLaneId ? laneBounds.get(curLaneId) : null;
+        const centerY = curLaneBox ? curLaneBox.y + curLaneBox.h / 2 : joinLaneMidY;
+        let x = centerX - w / 2;
         let y = centerY - h / 2;
-        const elLaneId = laneIdByElement.get(curId);
-        const elLaneBox = elLaneId ? laneBounds.get(elLaneId) : null;
-        if (elLaneBox) {
-          const minY = elLaneBox.y + 5;
-          const maxY = elLaneBox.y + elLaneBox.h - h - 5;
+        if (curLaneBox) {
+          const minY = curLaneBox.y + 5;
+          const maxY = curLaneBox.y + curLaneBox.h - h - 5;
           if (y < minY) y = minY;
           if (y > maxY) y = maxY;
         }
         if (y < 0) y = 0;
+        const finalCenterY = y + h / 2;
+        elementPositionMap.set(curId, { x: centerX, y: finalCenterY });
+        elementSizeMap.set(curId, { w, h });
         replaceBpmnShapeBounds(planeShapes, curId, x, y, w, h);
 
         const nextFlows = sequenceFlows.filter(
@@ -1259,7 +1341,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
   const gatewayOutgoing = new Map();
   processes.forEach((processInfo) => {
     processInfo.elements.forEach((el) => {
-      if (el.type && (el.type === 'exclusiveGateway' || el.type === 'inclusiveGateway' || el.type === 'parallelGateway') && el.outgoing && el.outgoing.length > 1) {
+      if (el.type && isGatewayType(el.type) && el.outgoing && el.outgoing.length > 1) {
         gatewayOutgoing.set(el.id, el.outgoing);
       }
     });
@@ -1416,13 +1498,71 @@ function mapElementTypeToTag(type) {
     sendTask: 'sendTask',
     receiveTask: 'receiveTask',
     manualTask: 'manualTask',
+    subProcess: 'subProcess',
+    callActivity: 'callActivity',
     exclusiveGateway: 'exclusiveGateway',
     inclusiveGateway: 'inclusiveGateway',
     parallelGateway: 'parallelGateway',
+    eventBasedGateway: 'eventBasedGateway',
+    complexGateway: 'complexGateway',
     intermediateThrowEvent: 'intermediateThrowEvent',
     intermediateCatchEvent: 'intermediateCatchEvent',
   };
   return mapping[type] || 'task';
+}
+
+function isTaskLikeType(type) {
+  return TASK_LIKE_TYPES.has(type);
+}
+
+/** Один flowNode в XML (подпроцесс — с минимальной внутренней диаграммой start→end). */
+function buildFlowNodeXml(element, indent = '    ') {
+  const childIndent = `${indent}  `;
+  if (element.type === 'subProcess') {
+    const innerStart = `${element.id}_inner_start`;
+    const innerEnd = `${element.id}_inner_end`;
+    const innerFlow = `${element.id}_inner_sf`;
+    let s = `${indent}<subProcess id="${element.id}"`;
+    if (element.label) s += ` name="${escapeXml(element.label)}"`;
+    s += `>\n`;
+    element.incoming.forEach((flowId) => {
+      s += `${childIndent}<incoming>${flowId}</incoming>\n`;
+    });
+    element.outgoing.forEach((flowId) => {
+      s += `${childIndent}<outgoing>${flowId}</outgoing>\n`;
+    });
+    s += `${childIndent}<startEvent id="${innerStart}" name="${escapeXml('Начало подпроцесса')}"/>\n`;
+    s += `${childIndent}<endEvent id="${innerEnd}" name="${escapeXml('Конец подпроцесса')}"/>\n`;
+    s += `${childIndent}<sequenceFlow id="${innerFlow}" sourceRef="${innerStart}" targetRef="${innerEnd}"/>\n`;
+    s += `${indent}</subProcess>\n`;
+    return s;
+  }
+
+  const tagName = mapElementTypeToTag(element.type);
+  let s = `${indent}<${tagName} id="${element.id}"`;
+  if (element.label) {
+    s += ` name="${escapeXml(element.label)}"`;
+  }
+  if (element.defaultFlow) {
+    s += ` default="${element.defaultFlow}"`;
+  }
+  s += `>\n`;
+
+  element.incoming.forEach((flowId) => {
+    s += `${childIndent}<incoming>${flowId}</incoming>\n`;
+  });
+
+  element.outgoing.forEach((flowId) => {
+    s += `${childIndent}<outgoing>${flowId}</outgoing>\n`;
+  });
+
+  if (element.eventDefinition && element.eventDefinition !== 'none') {
+    const eventDefTag = mapEventDefinitionToTag(element.eventDefinition);
+    s += `${childIndent}<${eventDefTag} id="${eventDefTag}_${element.id}"/>\n`;
+  }
+
+  s += `${indent}</${tagName}>\n`;
+  return s;
 }
 
 function mapEventDefinitionToTag(eventDef) {
@@ -1499,16 +1639,12 @@ export function validateProcess(process, isTopLevel = true) {
 
   // Validate gateways
   process.forEach((element, index) => {
-    if (
-      element.type === 'exclusiveGateway' ||
-      element.type === 'inclusiveGateway' ||
-      element.type === 'parallelGateway'
-    ) {
+    if (isGatewayType(element.type)) {
       if (!element.branches || element.branches.length === 0) {
         errors.push(`Шлюз на позиции ${index + 1} должен иметь хотя бы одну ветвь`);
       }
 
-      if (element.type === 'parallelGateway') {
+      if (isParallelGatewayType(element.type)) {
         element.branches?.forEach((branch, branchIndex) => {
           if (!branch.path || branch.path.length === 0) {
             errors.push(

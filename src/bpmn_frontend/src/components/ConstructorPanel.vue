@@ -176,25 +176,20 @@
                           Добавить после
                         </v-btn>
                       </template>
-                      <v-list>
-                        <v-list-item @click="addElementAfter(0, laneIndex, elementIndex, 'task')">
-                          <v-list-item-title>
-                            <v-icon icon="mdi-checkbox-marked-circle" size="small" class="mr-2" />
-                            Задача
-                          </v-list-item-title>
-                        </v-list-item>
-                        <v-list-item @click="addElementAfter(0, laneIndex, elementIndex, 'exclusiveGateway')">
-                          <v-list-item-title>
-                            <v-icon icon="mdi-source-branch" size="small" class="mr-2" />
-                            Условие (Если)
-                          </v-list-item-title>
-                        </v-list-item>
-                        <v-list-item @click="addElementAfter(0, laneIndex, elementIndex, 'endEvent')">
-                          <v-list-item-title>
-                            <v-icon icon="mdi-stop-circle" size="small" class="mr-2" />
-                            Событие конца
-                          </v-list-item-title>
-                        </v-list-item>
+                      <v-list density="compact">
+                        <template v-for="group in bpmnPaletteGroupsForAddAfter" :key="group.title">
+                          <v-list-subheader>{{ group.title }}</v-list-subheader>
+                          <v-list-item
+                            v-for="item in group.items"
+                            :key="item.type"
+                            @click="addElementAfter(0, laneIndex, elementIndex, item.type)"
+                          >
+                            <v-list-item-title>
+                              <v-icon :icon="item.icon" size="small" class="mr-2" />
+                              {{ item.title }}
+                            </v-list-item-title>
+                          </v-list-item>
+                        </template>
                       </v-list>
                     </v-menu>
                   </div>
@@ -215,43 +210,20 @@
                         Добавить элемент
                       </v-btn>
                     </template>
-                    <v-list>
-                      <v-list-item @click="addElementToLane(0, laneIndex, 'startEvent')">
-                        <v-list-item-title>
-                          <v-icon icon="mdi-play-circle" size="small" class="mr-2" />
-                          Событие начала
-                        </v-list-item-title>
-                      </v-list-item>
-                      <v-list-item @click="addElementToLane(0, laneIndex, 'endEvent')">
-                        <v-list-item-title>
-                          <v-icon icon="mdi-stop-circle" size="small" class="mr-2" />
-                          Событие конца
-                        </v-list-item-title>
-                      </v-list-item>
-                      <v-list-item @click="addElementToLane(0, laneIndex, 'task')">
-                        <v-list-item-title>
-                          <v-icon icon="mdi-checkbox-marked-circle" size="small" class="mr-2" />
-                          Задача
-                        </v-list-item-title>
-                      </v-list-item>
-                      <v-list-item @click="addElementToLane(0, laneIndex, 'exclusiveGateway')">
-                        <v-list-item-title>
-                          <v-icon icon="mdi-source-branch" size="small" class="mr-2" />
-                          Условие (Если)
-                        </v-list-item-title>
-                      </v-list-item>
-                      <v-list-item @click="addElementToLane(0, laneIndex, 'inclusiveGateway')">
-                        <v-list-item-title>
-                          <v-icon icon="mdi-source-branch" size="small" class="mr-2" />
-                          Множественные условия
-                        </v-list-item-title>
-                      </v-list-item>
-                      <v-list-item @click="addElementToLane(0, laneIndex, 'parallelGateway')">
-                        <v-list-item-title>
-                          <v-icon icon="mdi-source-merge" size="small" class="mr-2" />
-                          Параллельные процессы
-                        </v-list-item-title>
-                      </v-list-item>
+                    <v-list density="compact">
+                      <template v-for="group in BPMN_PALETTE_GROUPS" :key="group.title">
+                        <v-list-subheader>{{ group.title }}</v-list-subheader>
+                        <v-list-item
+                          v-for="item in group.items"
+                          :key="item.type"
+                          @click="addElementToLane(0, laneIndex, item.type)"
+                        >
+                          <v-list-item-title>
+                            <v-icon :icon="item.icon" size="small" class="mr-2" />
+                            {{ item.title }}
+                          </v-list-item-title>
+                        </v-list-item>
+                      </template>
                     </v-list>
                   </v-menu>
                 </div>
@@ -348,6 +320,7 @@ import {
   createElement,
   getAllElements,
 } from '../utils/diagramModel';
+import { BPMN_PALETTE_GROUPS } from '../utils/bpmnPalette.js';
 
 export default {
   name: 'ConstructorPanel',
@@ -386,6 +359,13 @@ export default {
     const selectedLaneIndex = ref(0);
     // Счётчик, чтобы выпадающий список дорожек в ElementEditor обновлялся при add/delete lane (ref не меняется при push)
     const lanesVersion = ref(0);
+
+    const bpmnPaletteGroupsForAddAfter = computed(() =>
+      BPMN_PALETTE_GROUPS.map((g) => ({
+        title: g.title,
+        items: g.items.filter((i) => i.addAfter !== false),
+      })).filter((g) => g.items.length > 0)
+    );
 
     const currentPool = computed(() =>
       diagram.value.pools && diagram.value.pools.length > 0 ? diagram.value.pools[0] : null
@@ -736,6 +716,8 @@ export default {
     }
 
     return {
+      BPMN_PALETTE_GROUPS,
+      bpmnPaletteGroupsForAddAfter,
       templates,
       diagram,
       process,

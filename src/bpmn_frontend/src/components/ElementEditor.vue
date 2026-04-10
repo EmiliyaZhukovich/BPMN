@@ -105,7 +105,7 @@
               </v-select>
             </div>
             <v-checkbox
-              v-if="element.type === 'inclusiveGateway'"
+              v-if="element.type === 'inclusiveGateway' || element.type === 'complexGateway'"
               v-model="branch.isDefault"
               label="По умолчанию"
               density="compact"
@@ -145,25 +145,20 @@
                   Добавить элемент
                 </v-btn>
               </template>
-              <v-list>
-                <v-list-item @click="addPathElement(branchIndex, 'task')">
-                  <v-list-item-title>
-                    <v-icon icon="mdi-checkbox-marked-circle" size="small" class="mr-2" />
-                    Задача
-                  </v-list-item-title>
-                </v-list-item>
-                <v-list-item @click="addPathElement(branchIndex, 'exclusiveGateway')">
-                  <v-list-item-title>
-                    <v-icon icon="mdi-source-branch" size="small" class="mr-2" />
-                    Условие (Если)
-                  </v-list-item-title>
-                </v-list-item>
-                <v-list-item @click="addPathElement(branchIndex, 'endEvent')">
-                  <v-list-item-title>
-                    <v-icon icon="mdi-stop-circle" size="small" class="mr-2" />
-                    Событие конца
-                  </v-list-item-title>
-                </v-list-item>
+              <v-list density="compact">
+                <template v-for="group in bpmnPaletteGroupsForAddAfter" :key="group.title">
+                  <v-list-subheader>{{ group.title }}</v-list-subheader>
+                  <v-list-item
+                    v-for="item in group.items"
+                    :key="item.type"
+                    @click="addPathElement(branchIndex, item.type)"
+                  >
+                    <v-list-item-title>
+                      <v-icon :icon="item.icon" size="small" class="mr-2" />
+                      {{ item.title }}
+                    </v-list-item-title>
+                  </v-list-item>
+                </template>
               </v-list>
             </v-menu>
           </div>
@@ -181,7 +176,7 @@
       </v-btn>
     </div>
 
-    <div v-if="!isGateway && (element.type === 'task' || element.type.startsWith('task'))" class="task-options">
+    <div v-if="showTaskTypeSelect" class="task-options">
       <v-select
         v-model="taskTypeValue"
         :items="taskTypes"
@@ -192,11 +187,24 @@
         class="task-type-select"
       />
     </div>
+
+    <div v-if="showEventDefinitionSelect" class="task-options">
+      <v-select
+        :model-value="eventDefinitionValue"
+        :items="eventDefinitionItems"
+        label="Тип события (BPMN)"
+        density="compact"
+        hide-details
+        @update:model-value="updateEventDefinition"
+        class="task-type-select"
+      />
+    </div>
   </div>
 </template>
 
 <script>
 import { ref, computed, watch, inject } from 'vue';
+import { BPMN_PALETTE_GROUPS, isGatewayType } from '../utils/bpmnPalette.js';
 
 export default {
   name: 'ElementEditor',
@@ -228,17 +236,59 @@ export default {
     const diagram = inject('diagram', ref(null));
     const getLanes = inject('getLanes', () => []);
 
-    const isGateway = computed(() => {
-      return (
-        props.element.type === 'exclusiveGateway' ||
-        props.element.type === 'inclusiveGateway' ||
-        props.element.type === 'parallelGateway'
-      );
-    });
+    const isGateway = computed(() => isGatewayType(props.element.type));
+
+    const bpmnPaletteGroupsForAddAfter = computed(() =>
+      BPMN_PALETTE_GROUPS.map((g) => ({
+        title: g.title,
+        items: g.items.filter((i) => i.addAfter !== false),
+      })).filter((g) => g.items.length > 0)
+    );
+
+    const taskOnlyTypes = new Set([
+      'task',
+      'userTask',
+      'serviceTask',
+      'scriptTask',
+      'businessRuleTask',
+      'sendTask',
+      'receiveTask',
+      'manualTask',
+    ]);
+
+    const showTaskTypeSelect = computed(
+      () => !isGateway.value && taskOnlyTypes.has(props.element.type)
+    );
+
+    const eventDefinitionEligibleTypes = new Set([
+      'startEvent',
+      'endEvent',
+      'intermediateCatchEvent',
+      'intermediateThrowEvent',
+    ]);
+
+    const showEventDefinitionSelect = computed(
+      () => !isGateway.value && eventDefinitionEligibleTypes.has(props.element.type)
+    );
+
+    const eventDefinitionItems = [
+      { title: 'Простое (без определения)', value: 'none' },
+      { title: 'Сообщение', value: 'message' },
+      { title: 'Таймер', value: 'timer' },
+      { title: 'Сигнал', value: 'signal' },
+    ];
+
+    const eventDefinitionValue = computed(() => props.element.eventDefinition || 'none');
 
     const hasError = computed(() => {
       if (!isGateway.value && !localLabel.value.trim()) {
-        return props.element.type !== 'startEvent' && props.element.type !== 'endEvent';
+        const optional = new Set([
+          'startEvent',
+          'endEvent',
+          'intermediateCatchEvent',
+          'intermediateThrowEvent',
+        ]);
+        return !optional.has(props.element.type);
       }
       return false;
     });
@@ -327,6 +377,16 @@ export default {
       emit('update', updatedElement);
     }
 
+    function updateEventDefinition(value) {
+      const updatedElement = JSON.parse(JSON.stringify(props.element));
+      if (!value || value === 'none') {
+        delete updatedElement.eventDefinition;
+      } else {
+        updatedElement.eventDefinition = value;
+      }
+      emit('update', updatedElement);
+    }
+
     function updateBranch() {
       emit('update', { ...props.element });
     }
@@ -401,7 +461,7 @@ export default {
       }
       // For exclusive gateway, default to "Да" and "Нет" for first two branches
       let defaultCondition = '';
-      if (updatedElement.type === 'exclusiveGateway') {
+      if (updatedElement.type === 'exclusiveGateway' || updatedElement.type === 'eventBasedGateway') {
         if (updatedElement.branches.length === 0) {
           defaultCondition = 'Да';
         } else if (updatedElement.branches.length === 1) {
@@ -437,20 +497,14 @@ export default {
       };
 
       // If adding a gateway, initialize branches
-      if (
-        elementType === 'exclusiveGateway' ||
-        elementType === 'inclusiveGateway' ||
-        elementType === 'parallelGateway'
-      ) {
-        if (elementType === 'exclusiveGateway') {
+      if (isGatewayType(elementType)) {
+        if (elementType === 'exclusiveGateway' || elementType === 'eventBasedGateway') {
           newElement.branches = [
             { condition: 'Да', path: [], isDefault: false },
             { condition: 'Нет', path: [], isDefault: false },
           ];
         } else {
-          newElement.branches = [
-            { condition: '', path: [], isDefault: false },
-          ];
+          newElement.branches = [{ condition: '', path: [], isDefault: false }];
         }
       }
 
@@ -480,6 +534,8 @@ export default {
       const icons = {
         startEvent: 'mdi-play-circle',
         endEvent: 'mdi-stop-circle',
+        intermediateCatchEvent: 'mdi-circle-outline',
+        intermediateThrowEvent: 'mdi-arrow-right-circle-outline',
         task: 'mdi-checkbox-marked-circle',
         userTask: 'mdi-account-circle',
         serviceTask: 'mdi-cog',
@@ -488,9 +544,13 @@ export default {
         sendTask: 'mdi-send',
         receiveTask: 'mdi-download',
         manualTask: 'mdi-hand-pointing-right',
+        subProcess: 'mdi-file-tree',
+        callActivity: 'mdi-phone-in-talk',
         exclusiveGateway: 'mdi-source-branch',
         inclusiveGateway: 'mdi-source-branch',
         parallelGateway: 'mdi-source-merge',
+        eventBasedGateway: 'mdi-ray-start-arrow',
+        complexGateway: 'mdi-vector-polyline',
       };
       return icons[type] || 'mdi-circle';
     }
@@ -499,6 +559,8 @@ export default {
       const labels = {
         startEvent: 'Событие начала',
         endEvent: 'Событие конца',
+        intermediateCatchEvent: 'Промежуточное (ожидание)',
+        intermediateThrowEvent: 'Промежуточное (инициирование)',
         task: 'Задача',
         userTask: 'Пользовательская задача',
         serviceTask: 'Сервисная задача',
@@ -507,9 +569,13 @@ export default {
         sendTask: 'Задача отправки',
         receiveTask: 'Задача получения',
         manualTask: 'Ручная задача',
+        subProcess: 'Подпроцесс',
+        callActivity: 'Вызов процесса',
         exclusiveGateway: 'Условие (Если)',
         inclusiveGateway: 'Множественные условия',
         parallelGateway: 'Параллельные процессы',
+        eventBasedGateway: 'Шлюз по событиям',
+        complexGateway: 'Комплексный шлюз',
       };
       return labels[type] || type;
     }
@@ -518,6 +584,8 @@ export default {
       const placeholders = {
         startEvent: 'Название события начала (например, Получение заявки)',
         endEvent: 'Название события конца (например, Заявка зарегистрирована)',
+        intermediateCatchEvent: 'Название или пояснение ожидания',
+        intermediateThrowEvent: 'Название или пояснение инициирования',
         task: 'Название задачи',
         userTask: 'Название пользовательской задачи',
         serviceTask: 'Название сервисной задачи',
@@ -526,6 +594,8 @@ export default {
         sendTask: 'Название задачи отправки',
         receiveTask: 'Название задачи получения',
         manualTask: 'Название ручной задачи',
+        subProcess: 'Название подпроцесса',
+        callActivity: 'Название вызываемого процесса',
       };
       return placeholders[type] || 'Введите название';
     }
@@ -533,24 +603,33 @@ export default {
     function getGatewayPlaceholder(type) {
       if (type === 'exclusiveGateway') {
         return 'Вопрос условия (например, Есть ли продукты для заказа?)';
-      } else if (type === 'inclusiveGateway') {
+      }
+      if (type === 'inclusiveGateway') {
         return 'Вопрос множественного условия';
-      } else if (type === 'parallelGateway') {
+      }
+      if (type === 'parallelGateway') {
         return 'Название параллельного процесса';
+      }
+      if (type === 'eventBasedGateway') {
+        return 'Описание разветвления по событиям';
+      }
+      if (type === 'complexGateway') {
+        return 'Описание комплексной логики шлюза';
       }
       return 'Введите вопрос';
     }
 
     function getBranchPlaceholder(gatewayType, branchIndex) {
-      if (gatewayType === 'exclusiveGateway') {
+      if (gatewayType === 'exclusiveGateway' || gatewayType === 'eventBasedGateway') {
         if (branchIndex === 0) {
-          return 'Да (или укажите условие)';
-        } else {
-          return 'Нет (или укажите условие)';
+          return 'Да (или укажите условие / событие)';
         }
-      } else if (gatewayType === 'inclusiveGateway') {
+        return 'Нет (или укажите условие / событие)';
+      }
+      if (gatewayType === 'inclusiveGateway' || gatewayType === 'complexGateway') {
         return 'Условие ветви';
-      } else if (gatewayType === 'parallelGateway') {
+      }
+      if (gatewayType === 'parallelGateway') {
         return 'Название параллельной ветви';
       }
       return 'Условие';
@@ -566,6 +645,12 @@ export default {
       expanded,
       localLabel,
       isGateway,
+      bpmnPaletteGroupsForAddAfter,
+      showTaskTypeSelect,
+      showEventDefinitionSelect,
+      eventDefinitionItems,
+      eventDefinitionValue,
+      updateEventDefinition,
       hasError,
       canHaveNextElement,
       nextElementOptions,
