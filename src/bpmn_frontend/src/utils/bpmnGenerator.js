@@ -1613,11 +1613,22 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
           ];
         }
       } else {
-        waypoints = [
-          { x: exitX, y: exitY },
-          { x: exitX, y: tgtCenterY },
-          { x: tgtLeft, y: tgtCenterY },
-        ];
+        // Три и более веток: верх/низ — из вершин ромба (exitX); промежуточные — с правого ребра (как в BPMN), не из центра.
+        const srcRight = src.x + srcSize.w / 2;
+        const atSideVertex = outIndex > 0 && outIndex < nOut - 1;
+        const exitAttachX = atSideVertex ? srcRight : exitX;
+        if (Math.abs(exitY - tgtCenterY) < 1) {
+          waypoints = [
+            { x: exitAttachX, y: exitY },
+            { x: tgtLeft, y: tgtCenterY },
+          ];
+        } else {
+          waypoints = [
+            { x: exitAttachX, y: exitY },
+            { x: exitAttachX, y: tgtCenterY },
+            { x: tgtLeft, y: tgtCenterY },
+          ];
+        }
       }
       pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
     } else {

@@ -553,11 +553,21 @@ class BpmnLayoutService:
                                         (last_wp_x, tgt_center_y),
                                     ]
                             else:
-                                waypoints = [
-                                    (exit_x, exit_y),
-                                    (exit_x, last_wp_y),
-                                    (last_wp_x, last_wp_y),
-                                ]
+                                # 3+ веток: верх/низ — из вершин (exit_x); средние — с правого ребра шлюза.
+                                gateway_right = sb["x"] + sb["w"]
+                                at_side = 0 < out_index < n_out - 1
+                                exit_attach_x = gateway_right if at_side else exit_x
+                                if abs(exit_y - tgt_center_y) < 1:
+                                    waypoints = [
+                                        (exit_attach_x, exit_y),
+                                        (last_wp_x, tgt_center_y),
+                                    ]
+                                else:
+                                    waypoints = [
+                                        (exit_attach_x, exit_y),
+                                        (exit_attach_x, tgt_center_y),
+                                        (last_wp_x, tgt_center_y),
+                                    ]
                         wp_lines = "\n".join(
                             f'      <di:waypoint x="{x}" y="{y}"/>' for x, y in waypoints
                         )
