@@ -97,13 +97,20 @@ export function createLane(name = 'Новая дорожка') {
 
 /**
  * Create a new element
+ * @param {string} type
+ * @param {string} label
+ * @param {{ eventDefinition?: string }} [options]
  */
-export function createElement(type, label = '') {
+export function createElement(type, label = '', options = {}) {
   const element = {
     id: `element_${Date.now()}_${Math.random()}`,
     type,
     label,
   };
+
+  if (options.eventDefinition) {
+    element.eventDefinition = options.eventDefinition;
+  }
 
   // Initialize gateway branches
   if (isDivergingGatewayType(type)) {

@@ -2,8 +2,8 @@
   <div class="element-editor" :class="{ 'is-gateway': isGateway, 'is-nested': isNested }">
     <div class="element-header" @click="toggleExpanded" v-if="isGateway">
       <v-icon :icon="expanded ? 'mdi-chevron-down' : 'mdi-chevron-right'" size="small" />
-      <v-icon :icon="getElementIcon(element.type)" size="small" class="element-type-icon" />
-      <span class="element-type-label">{{ getElementTypeLabel(element.type) }}</span>
+      <v-icon :icon="getElementIcon(element)" size="small" class="element-type-icon" />
+      <span class="element-type-label">{{ getElementTypeLabel(element) }}</span>
       <v-chip size="x-small" color="primary" variant="flat" class="ml-2">
         {{ element.branches?.length || 0 }} {{ getBranchLabel(element.branches?.length || 0) }}
       </v-chip>
@@ -29,14 +29,14 @@
     </div>
 
     <div v-else class="element-header-simple">
-      <v-icon :icon="getElementIcon(element.type)" size="small" class="element-type-icon" />
+      <v-icon :icon="getElementIcon(element)" size="small" class="element-type-icon" />
       <input
         v-model="localLabel"
         @input="updateLabel"
         :placeholder="getPlaceholder(element.type)"
         class="element-label-input"
         :class="{ 'has-error': hasError }"
-        :aria-label="`${getElementTypeLabel(element.type)} label`"
+        :aria-label="`${getElementTypeLabel(element)} label`"
         :aria-invalid="hasError"
       />
       <v-btn
@@ -276,6 +276,7 @@ export default {
       { title: 'Сообщение', value: 'message' },
       { title: 'Таймер', value: 'timer' },
       { title: 'Сигнал', value: 'signal' },
+      { title: 'Ссылка (link throw / link catch)', value: 'link' },
     ];
 
     const eventDefinitionValue = computed(() => props.element.eventDefinition || 'none');
@@ -309,7 +310,7 @@ export default {
 
       function pushOptions(el, laneName, pathSuffix) {
         if (!el || !el.id || el.id === selfId) return;
-        const label = (el.label && String(el.label).trim()) || getElementTypeLabel(el.type || 'task');
+        const label = (el.label && String(el.label).trim()) || getElementTypeLabel(el || {});
         const title = pathSuffix
           ? `${label} — ${laneName} · ${pathSuffix}`
           : `${label} — ${laneName}`;
@@ -547,7 +548,14 @@ export default {
       }
     }
 
-    function getElementIcon(type) {
+    /** Принимает тип (строка) или объект элемента — для link рисуем разные стрелки как в BPMN. */
+    function getElementIcon(typeOrEl) {
+      const el = typeOrEl && typeof typeOrEl === 'object' ? typeOrEl : null;
+      const type = el ? el.type : typeOrEl;
+      if (el?.eventDefinition === 'link') {
+        if (type === 'intermediateThrowEvent') return 'mdi-arrow-right-bold-circle';
+        if (type === 'intermediateCatchEvent') return 'mdi-arrow-right-circle-outline';
+      }
       const icons = {
         startEvent: 'mdi-play-circle',
         endEvent: 'mdi-stop-circle',
@@ -572,7 +580,13 @@ export default {
       return icons[type] || 'mdi-circle';
     }
 
-    function getElementTypeLabel(type) {
+    function getElementTypeLabel(typeOrEl) {
+      const el = typeOrEl && typeof typeOrEl === 'object' ? typeOrEl : null;
+      const type = el ? el.type : typeOrEl;
+      if (el?.eventDefinition === 'link') {
+        if (type === 'intermediateCatchEvent') return 'Событие-ссылка (catch)';
+        if (type === 'intermediateThrowEvent') return 'Событие-ссылка (throw)';
+      }
       const labels = {
         startEvent: 'Событие начала',
         endEvent: 'Событие конца',
@@ -598,6 +612,12 @@ export default {
     }
 
     function getPlaceholder(type) {
+      if (
+        props.element?.eventDefinition === 'link' &&
+        (type === 'intermediateCatchEvent' || type === 'intermediateThrowEvent')
+      ) {
+        return 'Имя связи (одинаковое у пары catch и throw)';
+      }
       const placeholders = {
         startEvent: 'Название события начала (например, Получение заявки)',
         endEvent: 'Название события конца (например, Заявка зарегистрирована)',

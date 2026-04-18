@@ -181,8 +181,8 @@
                           <v-list-subheader>{{ group.title }}</v-list-subheader>
                           <v-list-item
                             v-for="item in group.items"
-                            :key="item.type"
-                            @click="addElementAfter(0, laneIndex, elementIndex, item.type)"
+                            :key="item.paletteId || item.type"
+                            @click="addElementAfter(0, laneIndex, elementIndex, item)"
                           >
                             <v-list-item-title>
                               <v-icon :icon="item.icon" size="small" class="mr-2" />
@@ -215,8 +215,8 @@
                         <v-list-subheader>{{ group.title }}</v-list-subheader>
                         <v-list-item
                           v-for="item in group.items"
-                          :key="item.type"
-                          @click="addElementToLane(0, laneIndex, item.type)"
+                          :key="item.paletteId || item.type"
+                          @click="addElementToLane(0, laneIndex, item)"
                         >
                           <v-list-item-title>
                             <v-icon :icon="item.icon" size="small" class="mr-2" />
@@ -453,23 +453,32 @@ export default {
       return pool.lanes[selectedLaneIndex.value];
     }
 
-    function addElement(type) {
+    /** Принимает тип строкой или объект пункта палитры (type + опционально eventDefinition). */
+    function elementFromPaletteRef(typeOrItem) {
+      if (typeOrItem != null && typeof typeOrItem === 'object' && typeOrItem.type) {
+        const { type, eventDefinition } = typeOrItem;
+        return createElement(type, '', eventDefinition ? { eventDefinition } : {});
+      }
+      return createElement(typeOrItem, '');
+    }
+
+    function addElement(typeOrItem) {
       const lane = getCurrentLane();
       if (!lane.elements) {
         lane.elements = [];
       }
-      const element = createElement(type, '');
+      const element = elementFromPaletteRef(typeOrItem);
       lane.elements.push(element);
       saveToHistory();
     }
 
     /** Добавить элемент в конкретную дорожку (для меню «Добавить элемент» — без зависимости от selectedLaneIndex) */
-    function addElementToLane(poolIndex, laneIndex, type) {
+    function addElementToLane(poolIndex, laneIndex, typeOrItem) {
       const pool = diagram.value.pools[poolIndex];
       if (!pool?.lanes || laneIndex < 0 || laneIndex >= pool.lanes.length) return;
       const lane = pool.lanes[laneIndex];
       if (!lane.elements) lane.elements = [];
-      const element = createElement(type, '');
+      const element = elementFromPaletteRef(typeOrItem);
       lane.elements.push(element);
       selectedLaneIndex.value = laneIndex;
       saveToHistory();
@@ -616,24 +625,24 @@ export default {
       }
     }
 
-    function addElementAfter(poolIndex, laneIndex, elementIndex, type) {
+    function addElementAfter(poolIndex, laneIndex, elementIndex, typeOrItem) {
       const pool = diagram.value.pools[poolIndex];
       const lane = pool.lanes[laneIndex];
       if (!lane.elements) {
         lane.elements = [];
       }
-      const element = createElement(type, '');
+      const element = elementFromPaletteRef(typeOrItem);
       lane.elements.splice(elementIndex + 1, 0, element);
       saveToHistory();
     }
 
     // Legacy method for backward compatibility
-    function addElementAfterLegacy(index, type) {
+    function addElementAfterLegacy(index, typeOrItem) {
       const lane = getCurrentLane();
       if (!lane.elements) {
         lane.elements = [];
       }
-      const element = createElement(type, '');
+      const element = elementFromPaletteRef(typeOrItem);
       lane.elements.splice(index + 1, 0, element);
       saveToHistory();
     }

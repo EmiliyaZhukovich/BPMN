@@ -1964,7 +1964,14 @@ function buildFlowNodeXml(element, indent = '    ') {
 
   if (element.eventDefinition && element.eventDefinition !== 'none') {
     const eventDefTag = mapEventDefinitionToTag(element.eventDefinition);
-    s += `${childIndent}<${eventDefTag} id="${eventDefTag}_${element.id}"/>\n`;
+    if (eventDefTag === 'linkEventDefinition') {
+      const linkName = element.label != null && String(element.label).trim() !== ''
+        ? ` name="${escapeXml(String(element.label).trim())}"`
+        : ' name=""';
+      s += `${childIndent}<${eventDefTag} id="${eventDefTag}_${element.id}"${linkName}/>\n`;
+    } else {
+      s += `${childIndent}<${eventDefTag} id="${eventDefTag}_${element.id}"/>\n`;
+    }
   }
 
   s += `${indent}</${tagName}>\n`;
@@ -1976,6 +1983,7 @@ function mapEventDefinitionToTag(eventDef) {
     timer: 'timerEventDefinition',
     message: 'messageEventDefinition',
     signal: 'signalEventDefinition',
+    link: 'linkEventDefinition',
   };
   return mapping[eventDef] || 'messageEventDefinition';
 }

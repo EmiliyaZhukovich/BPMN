@@ -67,6 +67,22 @@ export const BPMN_PALETTE_GROUPS = [
         icon: 'mdi-arrow-right-circle-outline',
         addAfter: true,
       },
+      {
+        paletteId: 'intermediateCatchEvent__link',
+        type: 'intermediateCatchEvent',
+        title: 'Событие-ссылка (catch)',
+        icon: 'mdi-arrow-right-circle-outline',
+        addAfter: true,
+        eventDefinition: 'link',
+      },
+      {
+        paletteId: 'intermediateThrowEvent__link',
+        type: 'intermediateThrowEvent',
+        title: 'Событие-ссылка (throw)',
+        icon: 'mdi-arrow-right-bold-circle',
+        addAfter: true,
+        eventDefinition: 'link',
+      },
     ],
   },
   {
