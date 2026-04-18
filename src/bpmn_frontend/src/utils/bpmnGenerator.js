@@ -758,16 +758,17 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
 
         if (targetEl) {
           const tgtLeft = targetEl.x - targetEl.w / 2;
-          const tgtTop = targetEl.y - targetEl.h / 2;
-          const tgtBottom = targetEl.y + targetEl.h / 2;
           const xMin = cornerX + LABEL_GAP;
           const rightEdgeMax = tgtLeft - PAD_ELEM;
           const stripW = rightEdgeMax - xMin;
           const wFull = Math.max(90, Math.min(300, Math.ceil(len * 10.5) + 40));
           if (stripW < 90) {
-            w = wFull;
-            y = above ? tgtTop - h - LABEL_GAP : tgtBottom + LABEL_GAP;
-            x = Math.max(xMin, midX - w / 2);
+            // Узкая полоса между вертикалью и целью: не сдвигаем подпись влево к другим задачам,
+            // а сужаем width и держим у горизонтального участка (yNearLine), центрируя по midX.
+            const wStrip = Math.max(0, tgtLeft - PAD_ELEM - xMin);
+            w = Math.min(wFull, Math.max(1, wStrip));
+            y = yNearLine;
+            x = Math.max(xMin, Math.min(midX - w / 2, tgtLeft - PAD_ELEM - w));
           } else {
             w = Math.min(wFull, stripW);
             y = yNearLine;
@@ -1966,10 +1967,15 @@ function validateNestedBranchPath(path, errors, mergeAfterParentGateway) {
   validateLinearFlowContinuity(path, errors, '', {
     implicitMergeAtEnd: Boolean(mergeAfterParentGateway),
   });
-  validateGatewaysInElementList(path, errors);
+  validateGatewaysInElementList(path, errors, mergeAfterParentGateway);
 }
 
-function validateGatewaysInElementList(elements, errors) {
+/**
+ * @param {boolean} [mergeAfterParentForkInLane] — родительская ветка сходится к общему хвосту
+ *   (после join внешнего шлюза есть продолжение). Нужно для path вида [вложенныйШлюз] без элементов
+ *   после него в том же массиве: иначе mergeAfterForkInLane считался бы false и ветви ошибочно «висят».
+ */
+function validateGatewaysInElementList(elements, errors, mergeAfterParentForkInLane = false) {
   if (!elements || !Array.isArray(elements)) return;
 
   elements.forEach((element, index) => {
@@ -1990,9 +1996,12 @@ function validateGatewaysInElementList(elements, errors) {
     }
 
     const nextAfterGateway = elements[index + 1];
-    const mergeAfterForkInLane = Boolean(
+    const hasNextInPath = Boolean(
       nextAfterGateway && nextAfterGateway.type && nextAfterGateway.type !== 'startEvent'
     );
+    const gatewayIsLastInList = index === elements.length - 1;
+    const mergeAfterForkInLane =
+      hasNextInPath || (gatewayIsLastInList && Boolean(mergeAfterParentForkInLane));
 
     element.branches?.forEach((branch, branchIndex) => {
       if (!branch.path || branch.path.length === 0) return;
