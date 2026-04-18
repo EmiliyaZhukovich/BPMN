@@ -688,11 +688,60 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     );
   }
 
-  function edgeLabelXml(labelText, waypointsOrStartEnd) {
+  /**
+   * Позиция dc:Bounds подписи потока.
+   * bpmn-js пересчитывает bounds в TextRenderer.getExternalLabelBounds — ширину в XML не занижать.
+   * Для выхода шлюза «вертикаль → горизонталь»: полоса слева от задачи часто уже ширины текста —
+   * тогда держим подпись у линии по Y и сужаем width до полосы; иначе отступ по Y от задачи.
+   *
+   * @param {{ x: number; y: number; w: number; h: number } | null | undefined} targetEl — цель sequenceFlow (центр + размер).
+   */
+  function edgeLabelXml(labelText, waypointsOrStartEnd, targetEl) {
     if (!labelText || !String(labelText).trim()) return '';
-    const w = Math.max(20, Math.min(120, String(labelText).length * 8));
-    const h = 14;
+    const text = String(labelText);
+    const len = text.length;
+    let w = Math.max(90, Math.min(300, Math.ceil(len * 10.5) + 40));
+    const h = 20;
     const LABEL_GAP = 8;
+    /** отступ подписи от линии потока (не на стрелке) */
+    const LINE_PAD = 6;
+    /** отступ от границ соседнего элемента */
+    const PAD_ELEM = 8;
+
+    /** @param {{x:number,y:number}} p0 @param {{x:number,y:number}} p1 */
+    function labelTopLeftOffSegment(p0, p1) {
+      const dx = p1.x - p0.x;
+      const dy = p1.y - p0.y;
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+      const midX = (p0.x + p1.x) / 2;
+      const midY = (p0.y + p1.y) / 2;
+
+      if (absDy < 0.5 && absDx > 0.5) {
+        return { x: midX - w / 2, y: midY - h - LINE_PAD };
+      }
+      if (absDx < 0.5 && absDy > 0.5) {
+        return { x: midX + LABEL_GAP, y: midY - h / 2 };
+      }
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      const off = h / 2 + LABEL_GAP;
+      return { x: midX + nx * off - w / 2, y: midY + ny * off - h / 2 };
+    }
+
+    /** Самый длинный прямой участок ломаной — на нём удобнее читать подпись. */
+    function longestSegment(wp) {
+      let best = { i: 0, len: -1 };
+      for (let i = 1; i < wp.length; i++) {
+        const a = wp[i - 1];
+        const b = wp[i];
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (len > best.len) best = { i, len, a, b };
+      }
+      return best.a && best.b ? { p0: best.a, p1: best.b } : null;
+    }
+
     let x;
     let y;
     if (Array.isArray(waypointsOrStartEnd) && waypointsOrStartEnd.length >= 3) {
@@ -700,48 +749,81 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       const p0 = wp[0];
       const p1 = wp[1];
       const p2 = wp[2];
-      // Вертикаль → горизонталь (выход из шлюза к задаче): подпись над горизонтальным участком, не на линии
+      // Вертикаль → горизонталь (выход из шлюза): подпись у горизонтального участка, не на углу и не на вертикали
       if (Math.abs(p0.x - p1.x) < 0.5 && Math.abs(p1.y - p2.y) < 0.5) {
-        x = (p1.x + p2.x) / 2 - w / 2;
-        y = p1.y - h - LABEL_GAP;
+        const midX = (p1.x + p2.x) / 2;
+        const above = p0.y > p1.y;
+        const cornerX = p1.x;
+        const yNearLine = above ? p1.y - h - LINE_PAD : p1.y + LINE_PAD;
+
+        if (targetEl) {
+          const tgtLeft = targetEl.x - targetEl.w / 2;
+          const tgtTop = targetEl.y - targetEl.h / 2;
+          const tgtBottom = targetEl.y + targetEl.h / 2;
+          const xMin = cornerX + LABEL_GAP;
+          const rightEdgeMax = tgtLeft - PAD_ELEM;
+          const stripW = rightEdgeMax - xMin;
+          const wFull = Math.max(90, Math.min(300, Math.ceil(len * 10.5) + 40));
+          if (stripW < 90) {
+            w = wFull;
+            y = above ? tgtTop - h - LABEL_GAP : tgtBottom + LABEL_GAP;
+            x = Math.max(xMin, midX - w / 2);
+          } else {
+            w = Math.min(wFull, stripW);
+            y = yNearLine;
+            x = Math.max(xMin, Math.min(midX - w / 2, rightEdgeMax - w));
+          }
+        } else {
+          y = yNearLine;
+          const hx0 = Math.min(p1.x, p2.x);
+          x = Math.max(hx0 + LABEL_GAP, midX - w / 2);
+        }
       } else if (Math.abs(p0.y - p1.y) < 0.5 && Math.abs(p1.x - p2.x) < 0.5) {
-        x = (p0.x + p1.x) / 2 - w / 2;
-        y = p0.y - h - LABEL_GAP;
+        const seg = labelTopLeftOffSegment(p0, p1);
+        x = seg.x;
+        y = seg.y;
       } else {
-        const mid = Math.floor(wp.length / 2);
-        const pa = wp[mid - 1];
-        const pb = wp[mid];
-        x = (pa.x + pb.x) / 2 - w / 2;
-        y = (pa.y + pb.y) / 2 - h / 2;
+        const seg = wp.length > 3 ? longestSegment(wp) : null;
+        if (seg) {
+          const t = labelTopLeftOffSegment(seg.p0, seg.p1);
+          x = t.x;
+          y = t.y;
+        } else {
+          const t = labelTopLeftOffSegment(p0, p1);
+          x = t.x;
+          y = t.y;
+        }
       }
     } else if (Array.isArray(waypointsOrStartEnd) && waypointsOrStartEnd.length >= 2) {
       const mid = Math.floor(waypointsOrStartEnd.length / 2);
       const p0 = waypointsOrStartEnd[mid - 1];
       const p1 = waypointsOrStartEnd[mid];
-      x = (p0.x + p1.x) / 2 - w / 2;
-      y = (p0.y + p1.y) / 2 - h / 2;
+      const t = labelTopLeftOffSegment(p0, p1);
+      x = t.x;
+      y = t.y;
     } else if (waypointsOrStartEnd && waypointsOrStartEnd.start && waypointsOrStartEnd.end) {
-      x = (waypointsOrStartEnd.start.x + waypointsOrStartEnd.end.x) / 2 - w / 2;
-      y = (waypointsOrStartEnd.start.y + waypointsOrStartEnd.end.y) / 2 - h / 2;
+      const t = labelTopLeftOffSegment(waypointsOrStartEnd.start, waypointsOrStartEnd.end);
+      x = t.x;
+      y = t.y;
     } else {
       return '';
     }
     return `\n      <bpmndi:BPMNLabel>\n        <dc:Bounds x="${Math.round(x)}" y="${Math.round(y)}" width="${w}" height="${h}"/>\n      </bpmndi:BPMNLabel>`;
   }
 
-  function pushEdge(id, bpmnElement, srcPos, tgtPos, labelText) {
+  function pushEdge(id, bpmnElement, srcPos, tgtPos, labelText, targetForLabel) {
     if (!srcPos || !tgtPos) return;
     const pts = `      <di:waypoint x="${srcPos.x}" y="${srcPos.y}"/>\n      <di:waypoint x="${tgtPos.x}" y="${tgtPos.y}"/>`;
-    const label = edgeLabelXml(labelText, { start: srcPos, end: tgtPos });
+    const label = edgeLabelXml(labelText, { start: srcPos, end: tgtPos }, targetForLabel);
     planeEdges.push(
       `      <bpmndi:BPMNEdge id="Edge_${id}" bpmnElement="${bpmnElement}">\n${pts}${label}\n      </bpmndi:BPMNEdge>\n`
     );
   }
 
-  function pushEdgeOrthogonal(id, bpmnElement, waypoints, labelText) {
+  function pushEdgeOrthogonal(id, bpmnElement, waypoints, labelText, targetForLabel) {
     if (!waypoints || waypoints.length < 2) return;
     const pts = waypoints.map((p) => `      <di:waypoint x="${p.x}" y="${p.y}"/>`).join('\n');
-    const label = edgeLabelXml(labelText, waypoints);
+    const label = edgeLabelXml(labelText, waypoints, targetForLabel);
     planeEdges.push(
       `      <bpmndi:BPMNEdge id="Edge_${id}" bpmnElement="${bpmnElement}">\n${pts}${label}\n      </bpmndi:BPMNEdge>\n`
     );
@@ -1431,6 +1513,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     if (!src || !tgt) return;
     const srcSize = elementSizeMap.get(flow.sourceRef) || { w: 36, h: 36 };
     const tgtSize = elementSizeMap.get(flow.targetRef) || { w: 36, h: 36 };
+    const targetForLabel = { x: tgt.x, y: tgt.y, w: tgtSize.w, h: tgtSize.h };
     const outList = gatewayOutgoing.get(flow.sourceRef);
     const isFromGatewayWithBranches = outList && outList.length > 1;
 
@@ -1449,7 +1532,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         { x: exitX, y: tgtCenterY },
         { x: tgtLeft, y: tgtCenterY },
       ];
-      pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
+      pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
     } else {
       const srcLane = laneIdByElement.get(flow.sourceRef);
       const tgtLane = laneIdByElement.get(flow.targetRef);
@@ -1474,7 +1557,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
                 { x: src.x, y: endY },
                 { x: tgt.x, y: endY },
               ];
-        pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
+        pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
       } else {
         const srcRight = src.x + srcSize.w / 2;
         const tgtLeft = tgt.x - tgtSize.w / 2;
@@ -1504,7 +1587,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
               { x: tgt.x, y: joinBottomY },
             ];
           }
-          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
+          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
         } else if (flow.sourceRef.endsWith('-join')) {
           const exitR = src.x + srcSize.w / 2;
           const tgtL = tgt.x - tgtSize.w / 2;
@@ -1521,7 +1604,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
               { x: tgtL, y: tgt.y },
             ];
           }
-          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
+          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
         } else if (sameLane && yDiff > 2) {
           // Одна дорожка, разный Y (например после задач веток, не join): L-образная ломаная
           const waypoints =
@@ -1536,11 +1619,11 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
                   { x: srcRight, y: tgt.y },
                   { x: tgtLeft, y: tgt.y },
                 ];
-          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition);
+          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
         } else {
           const start = { x: srcRight, y: src.y };
           const end = { x: tgtLeft, y: tgt.y };
-          pushEdge(flow.id, flow.id, start, end, flow.condition);
+          pushEdge(flow.id, flow.id, start, end, flow.condition, targetForLabel);
         }
       }
     }

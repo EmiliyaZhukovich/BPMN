@@ -534,11 +534,9 @@ export default {
     }
 
     function clearAll() {
-      if (confirm('Вы уверены, что хотите очистить все элементы?')) {
-        diagram.value = createEmptyDiagram();
-        diagramBuilt.value = false;
-        saveToHistory();
-      }
+      diagram.value = createEmptyDiagram();
+      diagramBuilt.value = false;
+      saveToHistory();
     }
 
     function buildDiagram() {
@@ -605,11 +603,6 @@ export default {
     }
 
     function loadTemplate(templateKey) {
-      if (hasElements.value) {
-        if (!confirm('Загрузка шаблона заменит текущий процесс. Продолжить?')) {
-          return;
-        }
-      }
       const template = getTemplate(templateKey);
       if (template) {
         // Check if template is diagram (new format) or process (legacy format)

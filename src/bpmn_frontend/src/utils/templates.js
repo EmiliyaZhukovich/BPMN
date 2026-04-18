@@ -11,12 +11,12 @@ export const templates = {
       {
         id: 'start_1',
         type: 'startEvent',
-        label: 'Приём заявления',
+        label: 'Пришло заявление',
       },
       {
         id: 'task_1',
         type: 'task',
-        label: 'Проверьте правильность данных',
+        label: 'Проверить правильность данных',
       },
       {
         id: 'gateway_1',

@@ -29,66 +29,66 @@ autonumber
 actor "Системный\nаналитик" as User
 
 box "Клиент (Vue.js)" #F4F7FB
-  participant "Панель\nконструктора" as Panel
-  participant "Главный\nэкран" as Home
-  participant "Модельер BPMN\n(bpmn-js)" as Modeler <<внешняя библиотека>>
+  participant "panel:ПанельКонструктора" as panel
+  participant "home:ГлавныйЭкран" as home
+  participant "modeler:МодельерBpmn\n(bpmn-js)" as modeler <<внешняя библиотека>>
 end box
 
 box "Сервер (FastAPI)" #F4F7FB
-  participant "Приложение\nAPI" as API <<контроллер>>
-  participant "Сервис\nразметки BPMN" as Layout <<контроллер>>
+  participant "api:ПриложениеApi" as api <<контроллер>>
+  participant "layout:СервисРазметкиBpmn" as layout <<контроллер>>
 end box
 
-User -> Panel: Настроить процесс,\nнажать «Построить диаграмму»
-activate Panel
+User -> panel: Настроить процесс,\nнажать «Построить диаграмму»
+activate panel
 
 alt Модель не прошла проверку\n(валидация в конструкторе)
-  Panel --> User: Построение недоступно\n(кнопка отключена)
-  deactivate Panel
+  panel --> User: Построение недоступно\n(кнопка отключена)
+  deactivate panel
 else Модель допустима для построения
-  Panel -> Panel: сформироватьXml(модель диаграммы)\n(утилита генерации BPMN XML)
+  panel -> panel: сформироватьXml(модель диаграммы)\n(утилита генерации BPMN XML)
   alt Ошибка генерации XML
-    Panel --> User: сообщение об ошибке\n(структура процесса)
-    deactivate Panel
+    panel --> User: сообщение об ошибке\n(структура процесса)
+    deactivate panel
   else XML сформирован
-    Panel -> Home: событие: передать\nBPMN XML
-    activate Home
-    deactivate Panel
+    panel -> home: событие: передать\nBPMN XML
+    activate home
+    deactivate panel
 
     alt Пустая / сброшенная диаграмма
-      Home -> Modeler: импорт пустых definitions\n(очистка холста)
-      activate Modeler
-      Modeler --> Home: готово
-      deactivate Modeler
-      deactivate Home
+      home -> modeler: импорт пустых definitions\n(очистка холста)
+      activate modeler
+      modeler --> home: готово
+      deactivate modeler
+      deactivate home
     else Непустой BPMN XML
-      Home -> API: **POST** /process-bpmn\nJSON: { bpmnXml }
-      activate API
-      API -> Layout: обработатьBpmn(xml)
-      activate Layout
-      Layout -> Layout: авторазметка\n(bpmn-auto-layout)
-      Layout --> API: BPMN XML с разметкой
-      deactivate Layout
-      API --> Home: JSON: { layoutedXml }
-      deactivate API
+      home -> api: **POST** /process-bpmn\nJSON: { bpmnXml }
+      activate api
+      api -> layout: обработатьBpmn(xml)
+      activate layout
+      layout -> layout: авторазметка\n(bpmn-auto-layout)
+      layout --> api: BPMN XML с разметкой
+      deactivate layout
+      api --> home: JSON: { layoutedXml }
+      deactivate api
 
       opt Сервер недоступен,\nошибка или пустой ответ
-        note right of Home
+        note right of home
           Клиент оставляет исходный XMLи пытается показать диаграмму\nбез новой разметки.
         end note
       end
 
-      Home -> Modeler: импортироватьXml\n(размеченный или исходный XML)
-      activate Modeler
-      Modeler --> Home: предупреждения / успех
-      deactivate Modeler
+      home -> modeler: импортироватьXml\n(размеченный или исходный XML)
+      activate modeler
+      modeler --> home: предупреждения / успех
+      deactivate modeler
 
       alt Критическая ошибка импорта
-        Home --> User: уведомление об ошибке\n(снекбар)
+        home --> User: уведомление об ошибке\n(снекбар)
       else Успешное отображение
-        Home --> User: уведомление об успехе\n(снекбар)
+        home --> User: уведомление об успехе\n(снекбар)
       end
-      deactivate Home
+      deactivate home
     end
   end
 end
