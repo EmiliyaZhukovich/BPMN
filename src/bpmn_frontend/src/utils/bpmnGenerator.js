@@ -593,6 +593,55 @@ function buildXml(elements, flows, processInfo = null) {
   return xml;
 }
 
+/**
+ * Узел join (*-join) создаётся в process elements, но не попадает в дерево дорожки при collectElementIdsByLane —
+ * в laneElementMap его не было. Тогда «Уведомить» шло в массиве сразу после задачи ветви, и realign
+ * привязывал его к HR-задаче, а не к join слева → элементы оказывались в неправильном порядке по X.
+ */
+function injectJoinNodesIntoLaneElementMaps(processes, sequenceFlows) {
+  processes.forEach((processInfo) => {
+    const laneElementMap = processInfo.laneElementMap;
+    if (!laneElementMap || !processInfo.elements?.length) return;
+
+    const elementToLane = new Map();
+    laneElementMap.forEach((ids, laneId) => {
+      ids.forEach((id) => elementToLane.set(id, laneId));
+    });
+
+    processInfo.elements.forEach((el) => {
+      if (!el?.id || !el.id.endsWith('-join')) return;
+      const joinId = el.id;
+      if (elementToLane.has(joinId)) return;
+
+      const forkId = joinId.slice(0, -'-join'.length);
+      const forkLaneId = elementToLane.get(forkId);
+      if (!forkLaneId) return;
+
+      const arr = laneElementMap.get(forkLaneId);
+      if (!arr || arr.includes(joinId)) return;
+
+      const incomingToJoin = sequenceFlows.filter((f) => f.targetRef === joinId);
+      let insertAfter = -1;
+      incomingToJoin.forEach((f) => {
+        const srcLane = elementToLane.get(f.sourceRef);
+        if (srcLane === forkLaneId) {
+          const idx = arr.indexOf(f.sourceRef);
+          if (idx > insertAfter) insertAfter = idx;
+        }
+      });
+
+      if (insertAfter < 0) {
+        const fi = arr.indexOf(forkId);
+        if (fi >= 0) arr.splice(fi + 1, 0, joinId);
+        else arr.push(joinId);
+      } else {
+        arr.splice(insertAfter + 1, 0, joinId);
+      }
+      elementToLane.set(joinId, forkLaneId);
+    });
+  });
+}
+
 function buildCollaborationXml(processes, participants, messageFlows, sequenceFlows) {
   const xmlns = 'http://www.omg.org/spec/BPMN/20100524/MODEL';
   const bpmndi = 'http://www.omg.org/spec/BPMN/20100524/DI';
@@ -656,6 +705,8 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
 
     xml += `  </process>\n`;
   });
+
+  injectJoinNodesIntoLaneElementMaps(processes, sequenceFlows);
 
   // --- Minimal DI generation (shapes/edges) so pools/lanes are visible in bpmn-js ---
   // Simple layout by Y: each pool under previous. Elements spaced along X.
@@ -1278,6 +1329,34 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         }
       });
 
+      // Параллельный шлюз: первая задача на «чужой» дорожке — в той же колонке, что и первая задача ветви в дорожке шлюза (как HR / IT на эталоне).
+      processInfo.elements.forEach((el) => {
+        if (!el?.id || !isParallelGatewayType(el.type)) return;
+        const outs = sequenceFlows.filter(
+          (f) =>
+            processElIds.has(f.sourceRef) &&
+            processElIds.has(f.targetRef) &&
+            f.sourceRef === el.id
+        );
+        if (outs.length < 2) return;
+        const forkLane = laneIdByElement.get(el.id);
+        if (!forkLane) return;
+        let anchorX = null;
+        outs.forEach((f) => {
+          if (laneIdByElement.get(f.targetRef) === forkLane) {
+            const p = elementPositionMap.get(f.targetRef);
+            if (p && typeof p.x === 'number') anchorX = p.x;
+          }
+        });
+        if (anchorX == null) return;
+        outs.forEach((f) => {
+          const tl = laneIdByElement.get(f.targetRef);
+          if (tl && tl !== forkLane) {
+            preferredCenterX.set(f.targetRef, anchorX);
+          }
+        });
+      });
+
       lanes.forEach((lane) => {
         const elems = processInfo.laneElementMap.get(lane.id) || [];
         const lb = laneBounds.get(lane.id);
@@ -1350,7 +1429,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     }
   });
 
-  // Join-шлюз: вторая колонка на том же шаге, что и fork→ветка (2×COLUMN_SPACING от центра fork), чтобы горизонтальные сегменты были ровными
+  // Join-шлюз: exclusive — как раньше (симметрия + правый край веток); parallel — по колонке самой правой завершающей задачи, иначе join уезжает вправо и ломает вертикаль с нижней дорожки.
   const JOIN_GAP = 52;
   processes.forEach((processInfo) => {
     processInfo.elements.forEach((element) => {
@@ -1360,19 +1439,27 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       if (!forkPos) return;
       const incoming = sequenceFlows.filter((f) => f.targetRef === element.id);
       let maxRight = forkPos.x + 25;
+      let maxIncomingCenterX = forkPos.x;
       incoming.forEach((f) => {
         const srcPos = elementPositionMap.get(f.sourceRef);
         const srcSize = elementSizeMap.get(f.sourceRef);
         if (!srcPos || !srcSize) return;
         const right = srcPos.x + srcSize.w / 2;
         if (right > maxRight) maxRight = right;
+        maxIncomingCenterX = Math.max(maxIncomingCenterX, srcPos.x);
       });
       const joinW = 50;
-      // Горизонталь fork→задача: от центра fork до левого края задачи = COLUMN_SPACING − w_task/2;
-      // такой же отрезок справа от задачи до join: joinCenter = fork + 2×COLUMN_SPACING + joinW/2
-      const symmetricJoinCenterX = forkPos.x + 2 * COLUMN_SPACING + joinW / 2;
-      const joinCenterXFromContent = maxRight + JOIN_GAP + joinW / 2;
-      const joinCenterX = Math.max(symmetricJoinCenterX, joinCenterXFromContent);
+      const forkEl = processInfo.elements.find((e) => e.id === forkId);
+      const forkIsParallel = forkEl && isParallelGatewayType(forkEl.type);
+      let joinCenterX;
+      if (forkIsParallel) {
+        const minJoinCenterX = forkPos.x + 50 + JOIN_GAP;
+        joinCenterX = Math.max(maxIncomingCenterX, minJoinCenterX);
+      } else {
+        const symmetricJoinCenterX = forkPos.x + 2 * COLUMN_SPACING + joinW / 2;
+        const joinCenterXFromContent = maxRight + JOIN_GAP + joinW / 2;
+        joinCenterX = Math.max(symmetricJoinCenterX, joinCenterXFromContent);
+      }
       const joinCenterY = forkPos.y;
       elementPositionMap.set(element.id, { x: joinCenterX, y: joinCenterY });
       const laneId = laneIdByElement.get(forkId);
@@ -1559,6 +1646,10 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     if (isFromGatewayWithBranches) {
       const outIndex = outList.indexOf(flow.id);
       const nOut = outList.length;
+      const srcGwType = elementTypeById.get(flow.sourceRef);
+      const isParallelSplit = Boolean(srcGwType && isParallelGatewayType(srcGwType));
+      const srcLaneG = laneIdByElement.get(flow.sourceRef);
+      const tgtLaneG = laneIdByElement.get(flow.targetRef);
       // Выход из верхней/нижней (и промежуточных при 3+) точек ромба по вертикали, не с правого центра —
       // при двух ветках: сверху и снизу шлюза.
       const exitX = src.x;
@@ -1571,7 +1662,36 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       const GATEWAY_TOP_BRANCH_UP = 52;
 
       let waypoints;
-      if (nOut === 2) {
+      const srcRightGw = src.x + srcSize.w / 2;
+      // Параллельный шлюз: верхняя ветка в той же дорожке — горизонталь с правого ребра (bpmn-io), не через верхнюю вершину.
+      if (
+        nOut === 2 &&
+        isParallelSplit &&
+        outIndex === 0 &&
+        srcLaneG &&
+        tgtLaneG &&
+        srcLaneG === tgtLaneG &&
+        tgtLeft >= srcRightGw - 2
+      ) {
+        waypoints = [
+          { x: srcRightGw, y: src.y },
+          { x: tgtLeft, y: tgt.y },
+        ];
+      } else if (
+        nOut === 2 &&
+        isParallelSplit &&
+        outIndex === 1 &&
+        srcLaneG &&
+        tgtLaneG &&
+        srcLaneG !== tgtLaneG
+      ) {
+        const exitYBottom = src.y + srcSize.h / 2;
+        waypoints = [
+          { x: src.x, y: exitYBottom },
+          { x: src.x, y: tgt.y },
+          { x: tgtLeft, y: tgt.y },
+        ];
+      } else if (nOut === 2) {
         const exitYTop = src.y - srcSize.h / 2;
         const exitYBottom = src.y + srcSize.h / 2;
         if (outIndex === 0) {
@@ -1679,12 +1799,21 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
               { x: tgt.x, y: joinTopY },
             ];
           } else {
+            // Источник ниже join (напр. задача на нижней дорожке): сначала вертикаль по центру задачи, без длинной горизонтали на высоте midY.
             const joinBottomY = tgt.y + tgtSize.h / 2;
-            waypoints = [
-              { x: srcRight, y: src.y },
-              { x: tgt.x, y: src.y },
-              { x: tgt.x, y: joinBottomY },
-            ];
+            const srcTopY = src.y - srcSize.h / 2;
+            if (Math.abs(src.x - tgt.x) < 10) {
+              waypoints = [
+                { x: src.x, y: srcTopY },
+                { x: tgt.x, y: joinBottomY },
+              ];
+            } else {
+              waypoints = [
+                { x: src.x, y: srcTopY },
+                { x: src.x, y: joinBottomY },
+                { x: tgt.x, y: joinBottomY },
+              ];
+            }
           }
           pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
         } else if (flow.sourceRef.endsWith('-join')) {
