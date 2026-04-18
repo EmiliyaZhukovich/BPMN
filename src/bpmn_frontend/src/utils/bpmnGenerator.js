@@ -1075,7 +1075,18 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         visited.add(id);
         const laneId = laneIdByElement.get(id);
         if (laneId !== srcLane) continue;
-        elementToBranchRow.set(id, { laneId: srcLane, row, gatewayId, depth });
+        const prevRow = elementToBranchRow.get(id);
+        const next = { laneId: srcLane, row, gatewayId, depth };
+        if (!prevRow) {
+          elementToBranchRow.set(id, next);
+        } else {
+          // Узел слияния (две ветки в одну задачу): верхний ряд — меньший row (ветка «Да»); глубина — max по путям.
+          const mergedRow = Math.min(prevRow.row, row);
+          const mergedDepth = Math.max(prevRow.depth, depth);
+          if (mergedRow !== prevRow.row || mergedDepth !== prevRow.depth) {
+            elementToBranchRow.set(id, { ...prevRow, row: mergedRow, depth: mergedDepth });
+          }
+        }
         let rowSet = rowsByLane.get(srcLane);
         if (!rowSet) {
           rowSet = new Set();
@@ -1094,6 +1105,26 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       });
     }
   });
+
+  // После слияния row/depth у развилки: уточняем depth по цепочке (напр. конец после задачи с увеличенным depth).
+  for (let iter = 0; iter < 40; iter++) {
+    let changed = false;
+    sequenceFlows.forEach((f) => {
+      const src = elementToBranchRow.get(f.sourceRef);
+      const tgt = elementToBranchRow.get(f.targetRef);
+      if (!src || !tgt) return;
+      if (src.gatewayId !== tgt.gatewayId) return;
+      if (src.laneId !== tgt.laneId) return;
+      if (src.row !== tgt.row) return;
+      const nd = src.depth + 1;
+      if (nd > tgt.depth) {
+        tgt.depth = nd;
+        changed = true;
+      }
+    });
+    if (!changed) break;
+  }
+
   // Нормализуем nRows для записей, где не выставили выше (одна ветка и т.п.)
   const laneMaxRow = new Map();
   elementToBranchRow.forEach((data) => {
@@ -1506,6 +1537,13 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     });
   });
 
+  const elementTypeById = new Map();
+  processes.forEach((processInfo) => {
+    processInfo.elements.forEach((el) => {
+      if (el.id) elementTypeById.set(el.id, el.type);
+    });
+  });
+
   // Edges for sequence flows
   sequenceFlows.forEach((flow) => {
     const src = elementPositionMap.get(flow.sourceRef);
@@ -1527,11 +1565,60 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         nOut <= 1 ? src.y : src.y - srcSize.h / 2 + (outIndex / (nOut - 1)) * srcSize.h;
       const tgtCenterY = tgt.y;
       const tgtLeft = tgt.x - tgtSize.w / 2;
-      const waypoints = [
-        { x: exitX, y: exitY },
-        { x: exitX, y: tgtCenterY },
-        { x: tgtLeft, y: tgtCenterY },
-      ];
+      const tgtTopY = tgt.y - tgtSize.h / 2;
+      /** На сколько поднять «коридор» верхней ветки над ромбом, чтобы не сливаться с горизонталью нижней. */
+      const GATEWAY_TOP_BRANCH_UP = 52;
+
+      let waypoints;
+      if (nOut === 2) {
+        const exitYTop = src.y - srcSize.h / 2;
+        const exitYBottom = src.y + srcSize.h / 2;
+        if (outIndex === 0) {
+          // Верхняя ветка к верху цели. Прямой вертикалью вниз от верхнего выхода часто пересекаем Y нижнего
+          // выхода (там же начинается «Нет») — делаем обход вверх → направо → вниз, как на эталонной схеме.
+          const straightDownCrossesLowerExit =
+            exitYTop < exitYBottom && exitYBottom < tgtTopY;
+          if (straightDownCrossesLowerExit && tgtLeft >= exitX - 2) {
+            const srcLaneId = laneIdByElement.get(flow.sourceRef);
+            const lb = srcLaneId ? laneBounds.get(srcLaneId) : null;
+            const laneTopY = lb ? lb.y + 8 : 0;
+            let yRidge = exitYTop - GATEWAY_TOP_BRANCH_UP;
+            if (yRidge < laneTopY) yRidge = laneTopY;
+            waypoints = [
+              { x: exitX, y: exitY },
+              { x: exitX, y: yRidge },
+              { x: tgtLeft, y: yRidge },
+              { x: tgtLeft, y: tgtTopY },
+            ];
+          } else if (tgtLeft < exitX - 2) {
+            waypoints = [
+              { x: exitX, y: exitY },
+              { x: exitX, y: tgtCenterY },
+              { x: tgtLeft, y: tgtCenterY },
+            ];
+          } else {
+            // Две разные цели (шаблон «простое условие»): вход в левый центр задачи, не в верхнюю границу.
+            waypoints = [
+              { x: exitX, y: exitY },
+              { x: exitX, y: tgtCenterY },
+              { x: tgtLeft, y: tgtCenterY },
+            ];
+          }
+        } else {
+          // Нижняя ветка: вертикаль к Y центра цели, затем горизонталь (как до правок для split+join).
+          waypoints = [
+            { x: exitX, y: exitY },
+            { x: exitX, y: tgtCenterY },
+            { x: tgtLeft, y: tgtCenterY },
+          ];
+        }
+      } else {
+        waypoints = [
+          { x: exitX, y: exitY },
+          { x: exitX, y: tgtCenterY },
+          { x: tgtLeft, y: tgtCenterY },
+        ];
+      }
       pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
     } else {
       const srcLane = laneIdByElement.get(flow.sourceRef);
@@ -1607,19 +1694,37 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
           pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
         } else if (sameLane && yDiff > 2) {
           // Одна дорожка, разный Y (например после задач веток, не join): L-образная ломаная
-          const waypoints =
-            tgtLeft >= srcRight - 1
-              ? [
-                  { x: srcRight, y: src.y },
-                  { x: tgtLeft, y: src.y },
-                  { x: tgtLeft, y: tgt.y },
-                ]
-              : [
-                  { x: srcRight, y: src.y },
-                  { x: srcRight, y: tgt.y },
-                  { x: tgtLeft, y: tgt.y },
-                ];
-          pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
+          const tgtType = elementTypeById.get(flow.targetRef);
+          const incomingToTgt = sequenceFlows.filter((f) => f.targetRef === flow.targetRef).length;
+          const tgtBottomY = tgt.y + tgtSize.h / 2;
+          // Слияние в задачу снизу (напр. «Ответ получен» → «Объяснить»): выход справа по центру, затем вправо к колонке цели, вход в нижний центр.
+          if (
+            tgtType &&
+            TASK_LIKE_TYPES.has(tgtType) &&
+            src.y > tgt.y &&
+            incomingToTgt >= 2
+          ) {
+            const waypoints = [
+              { x: srcRight, y: src.y },
+              { x: tgt.x, y: src.y },
+              { x: tgt.x, y: tgtBottomY },
+            ];
+            pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
+          } else {
+            const waypoints =
+              tgtLeft >= srcRight - 1
+                ? [
+                    { x: srcRight, y: src.y },
+                    { x: tgtLeft, y: src.y },
+                    { x: tgtLeft, y: tgt.y },
+                  ]
+                : [
+                    { x: srcRight, y: src.y },
+                    { x: srcRight, y: tgt.y },
+                    { x: tgtLeft, y: tgt.y },
+                  ];
+            pushEdgeOrthogonal(flow.id, flow.id, waypoints, flow.condition, targetForLabel);
+          }
         } else {
           const start = { x: srcRight, y: src.y };
           const end = { x: tgtLeft, y: tgt.y };

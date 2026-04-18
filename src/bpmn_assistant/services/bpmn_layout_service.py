@@ -508,17 +508,56 @@ class BpmnLayoutService:
                                 (last_wp_x, last_wp_y),
                             ]
                         else:
-                            # По нотации BPMN: стрелки выходят из верхней и нижней вершин ромба
+                            # По нотации BPMN: стрелки выходят из верхней и нижней вершин ромба.
+                            # Две ветки: верхняя к верху цели; если прямой вертикалью вниз пересекаем Y нижнего
+                            # выхода — обход вверх, направо, вниз (см. bpmnGenerator.js).
                             exit_x = sb["x"] + sb["w"] / 2
                             if n_out <= 1:
                                 exit_y = sb["y"] + sb["h"] / 2
                             else:
                                 exit_y = sb["y"] + (out_index / (n_out - 1)) * sb["h"]
-                            waypoints = [
-                                (exit_x, exit_y),
-                                (exit_x, last_wp_y),
-                                (last_wp_x, last_wp_y),
-                            ]
+                            tgt_center_y = tb["y"] + tb["h"] / 2
+                            tgt_top_y = tb["y"]
+                            exit_y_top = sb["y"]
+                            exit_y_bottom = sb["y"] + sb["h"]
+                            if n_out == 2:
+                                if out_index == 0:
+                                    straight_down_crosses_lower = (
+                                        exit_y_top < exit_y_bottom < tgt_top_y
+                                    )
+                                    if straight_down_crosses_lower and last_wp_x >= exit_x - 2:
+                                        y_ridge = max(0.0, exit_y_top - 52)
+                                        waypoints = [
+                                            (exit_x, exit_y),
+                                            (exit_x, y_ridge),
+                                            (last_wp_x, y_ridge),
+                                            (last_wp_x, tgt_top_y),
+                                        ]
+                                    elif last_wp_x < exit_x - 2:
+                                        waypoints = [
+                                            (exit_x, exit_y),
+                                            (exit_x, tgt_center_y),
+                                            (last_wp_x, tgt_center_y),
+                                        ]
+                                    else:
+                                        # Разные цели веток: к левому центру цели (last_wp_y), не к верху прямоугольника.
+                                        waypoints = [
+                                            (exit_x, exit_y),
+                                            (exit_x, tgt_center_y),
+                                            (last_wp_x, tgt_center_y),
+                                        ]
+                                else:
+                                    waypoints = [
+                                        (exit_x, exit_y),
+                                        (exit_x, tgt_center_y),
+                                        (last_wp_x, tgt_center_y),
+                                    ]
+                            else:
+                                waypoints = [
+                                    (exit_x, exit_y),
+                                    (exit_x, last_wp_y),
+                                    (last_wp_x, last_wp_y),
+                                ]
                         wp_lines = "\n".join(
                             f'      <di:waypoint x="{x}" y="{y}"/>' for x, y in waypoints
                         )
