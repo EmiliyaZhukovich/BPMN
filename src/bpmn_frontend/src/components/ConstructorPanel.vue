@@ -769,23 +769,31 @@ export default {
 .constructor-panel {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   background: #ffffff;
-  border-right: 1px solid #e0e0e0;
 }
 
 .panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 16px;
   border-bottom: 1px solid #e0e0e0;
   background: #fafafa;
+  min-width: 0;
 }
 
 .header-content {
   display: flex;
   align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .panel-title {
@@ -793,6 +801,9 @@ export default {
   font-weight: 600;
   color: #424242;
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-actions {
@@ -802,6 +813,9 @@ export default {
 
 .panel-content {
   flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 16px;
 }
@@ -832,6 +846,8 @@ export default {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .process-elements {
@@ -924,10 +940,13 @@ export default {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 12px;
   background: #eeeeee;
   border-bottom: 1px solid #e0e0e0;
   border-radius: 8px 8px 0 0;
+  min-width: 0;
 }
 
 .pool-title-section {
@@ -944,7 +963,9 @@ export default {
   font-size: 0.95rem;
   padding: 4px 8px;
   border-radius: 4px;
-  min-width: 150px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 
 .pool-name-input:focus {
@@ -978,10 +999,13 @@ export default {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 8px 12px;
   background: #f5f5f5;
   border-bottom: 1px solid #e0e0e0;
   border-radius: 6px 6px 0 0;
+  min-width: 0;
 }
 
 .lane-title-section {
@@ -997,7 +1021,9 @@ export default {
   font-size: 0.85rem;
   padding: 4px 8px;
   border-radius: 4px;
-  min-width: 120px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 
 .lane-name-input:focus {
@@ -1013,6 +1039,8 @@ export default {
 .lane-elements {
   padding: 12px;
   min-height: 60px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .lane-empty-hint {

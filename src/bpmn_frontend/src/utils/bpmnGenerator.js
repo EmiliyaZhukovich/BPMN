@@ -391,6 +391,47 @@ export function generateBpmnXml(diagramOrProcess) {
       addFlowsFromNextElementIdTree(lane.elements);
     });
 
+    /**
+     * Гарантирует поток из шлюза слияния (forkId-join) в следующий элемент того же линейного списка
+     * (верхний уровень дорожки или path ветки). Узел join в модели конструктора не редактируется отдельно —
+     * связь должна появляться, когда после шлюза в том же массиве идёт продолжение процесса.
+     */
+    function ensureJoinFlowToLaneSuccessor(elements) {
+      if (!elements || !Array.isArray(elements) || elements.length < 2) {
+        return;
+      }
+      for (let i = 0; i < elements.length - 1; i++) {
+        const cur = elements[i];
+        const nxt = elements[i + 1];
+        if (cur?.id && nxt?.id && isGatewayType(cur.type)) {
+          const joinId = `${cur.id}-join`;
+          if (elementMap.has(joinId) && elementMap.has(nxt.id)) {
+            const hasFlow = flows.some(
+              (f) => f.sourceRef === joinId && f.targetRef === nxt.id
+            );
+            if (!hasFlow) {
+              addFlow(joinId, nxt.id);
+            }
+          }
+        }
+        if (cur?.branches) {
+          cur.branches.forEach((branch) => {
+            ensureJoinFlowToLaneSuccessor(branch.path || []);
+          });
+        }
+      }
+      const last = elements[elements.length - 1];
+      if (last?.branches) {
+        last.branches.forEach((branch) => {
+          ensureJoinFlowToLaneSuccessor(branch.path || []);
+        });
+      }
+    }
+
+    pool.lanes?.forEach((lane) => {
+      ensureJoinFlowToLaneSuccessor(lane.elements || []);
+    });
+
     // Карта: элемент (id) → индекс ветки (0, 1, …) для элементов внутри gateway.branches[].path в одной дорожке
     const elementToBranchIndex = new Map();
     // Распределяем элементы по дорожкам: основной поток — в свою дорожку; ветки шлюза — в branch.laneId или в дорожку шлюза
@@ -2138,8 +2179,11 @@ function collectAllIncomingCountsInPath(elements, incomingCounts, elementById) {
         }
       });
 
-      // Неявный переход шлюза к следующему элементу в списке не добавляем:
-      // генератор делает split/join и продолжение после шлюза отдельной логикой.
+      // После разветвления шлюзом ветки сходятся в неявный join (`id-join`);
+      // из него в генераторе идёт sequenceFlow к следующему узлу в том же линейном списке (если он есть).
+      if (nextInList?.id && nextInList.type !== 'startEvent') {
+        incrementMapCounter(incomingCounts, nextInList.id);
+      }
       continue;
     }
 

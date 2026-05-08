@@ -1,12 +1,24 @@
 <template>
   <div class="home-container">
-    <div class="constructor-container">
+    <div
+      class="constructor-container"
+      :style="{ width: `${constructorWidth}px` }"
+    >
       <ConstructorPanel
         @bpmn-xml-updated="handleBpmnXml"
         @export-png="exportPng"
         @export-svg="exportSvg"
       />
     </div>
+    <div
+      class="split-gutter"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Изменить ширину панели конструктора"
+      title="Потяните, чтобы изменить ширину панели"
+      tabindex="0"
+      @mousedown.prevent="onResizeStart"
+    />
     <div
       id="canvas"
       class="canvas-container"
@@ -33,9 +45,19 @@ export default {
     ConstructorPanel,
   },
   data() {
+    const savedW = typeof localStorage !== 'undefined'
+      ? localStorage.getItem('bpmn-assistant-constructor-width')
+      : null;
+    let initialW = 450;
+    if (savedW != null) {
+      const n = parseInt(savedW, 10);
+      if (!Number.isNaN(n)) initialW = n;
+    }
     return {
       bpmnXml: '',
       bpmnViewer: null,
+      constructorWidth: initialW,
+      _resizeCleanup: null,
       snackbar: {
         show: false,
         text: '',
@@ -44,6 +66,11 @@ export default {
     };
   },
   mounted() {
+    this.clampConstructorWidth();
+    this.handleWindowResize = () => {
+      this.clampConstructorWidth();
+    };
+    window.addEventListener('resize', this.handleWindowResize);
     this.bpmnViewer = new BpmnModeler({
       container: '#canvas',
     });
@@ -65,11 +92,70 @@ export default {
     //   });
   },
   beforeUnmount() {
+    if (this.handleWindowResize) {
+      window.removeEventListener('resize', this.handleWindowResize);
+    }
     if (this.bpmnViewer) {
       this.bpmnViewer.destroy();
     }
+    this.stopResizeListeners();
   },
   methods: {
+    clampConstructorWidth() {
+      const min = 280;
+      const max = Math.min(Math.floor(window.innerWidth * 0.88), 960);
+      let w = this.constructorWidth;
+      if (w < min) w = min;
+      if (w > max) w = max;
+      this.constructorWidth = w;
+    },
+    persistConstructorWidth() {
+      try {
+        localStorage.setItem('bpmn-assistant-constructor-width', String(this.constructorWidth));
+      } catch {
+        /* ignore */
+      }
+    },
+    stopResizeListeners() {
+      if (typeof this._resizeCleanup === 'function') {
+        this._resizeCleanup();
+        this._resizeCleanup = null;
+      }
+    },
+    onResizeStart(event) {
+      this.stopResizeListeners();
+      const startX = event.clientX;
+      const startW = this.constructorWidth;
+      const min = 280;
+      const max = () => Math.min(Math.floor(window.innerWidth * 0.88), 960);
+
+      const onMove = (e) => {
+        const dx = e.clientX - startX;
+        let w = startW + dx;
+        const hi = max();
+        if (w < min) w = min;
+        if (w > hi) w = hi;
+        this.constructorWidth = w;
+      };
+
+      const onUp = () => {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        window.removeEventListener('blur', onUp);
+        this._resizeCleanup = null;
+        this.clampConstructorWidth();
+        this.persistConstructorWidth();
+      };
+
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      window.addEventListener('blur', onUp);
+      this._resizeCleanup = onUp;
+    },
     hideBpmnLogo() {
       // Скрываем логотип BPMN.io различными способами
       const selectors = [
@@ -283,22 +369,46 @@ export default {
   flex-direction: row;
   height: 100vh;
   overflow: hidden;
+  align-items: stretch;
 }
 
 .constructor-container {
-  flex: 0 0 450px;
-  min-width: 400px;
-  max-width: 600px;
+  flex: 0 0 auto;
+  min-width: 280px;
+  max-width: min(88vw, 960px);
   height: 100vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+}
+
+.split-gutter {
+  flex: 0 0 6px;
+  width: 6px;
+  cursor: col-resize;
+  background: #e8e8e8;
+  border-left: 1px solid #d0d0d0;
+  border-right: 1px solid #d0d0d0;
+  align-self: stretch;
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+.split-gutter:hover {
+  background: #bbdefb;
+}
+
+.split-gutter:focus-visible {
+  outline: 2px solid #2196f3;
+  outline-offset: -2px;
 }
 
 .canvas-container {
   flex: 1;
+  min-width: 0;
   height: 100vh;
-  border-left: 1px solid #e0e0e0;
+  border-left: none;
   background: #fafafa;
 }
 
@@ -307,11 +417,6 @@ export default {
   height: 100%;
 }
 
-@media (min-width: 1800px) {
-  .constructor-container {
-    flex: 0 0 500px;
-  }
-}
 </style>
 
 <style>

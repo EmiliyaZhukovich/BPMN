@@ -49,7 +49,7 @@
       />
     </div>
 
-    <!-- Переход к элементу (в т.ч. другая дорожка или элемент вне текущей ветки); не шлюз и не конец -->
+    <!-- Переход к элементу (в т.ч. другая дорожка или шлюз слияния +id-join у параллельного разветвления); не шлюз и не конец -->
     <div
       v-if="canHaveNextElement && nextElementOptions.length > 0"
       class="next-element-row"
@@ -95,7 +95,6 @@
                 density="compact"
                 hide-details
                 class="branch-lane-select lane-v-select"
-                min-width="200"
                 no-data-text="Нет дорожек"
                 @update:model-value="updateBranchLane(branchIndex, $event)"
               >
@@ -129,6 +128,7 @@
               :is-nested="true"
               :pool="pool"
               :lanes="lanes"
+              :parallel-fork-ancestor-id="element.type === 'parallelGateway' ? element.id : parallelForkAncestorId"
               @update="handlePathUpdate(branchIndex, pathIndex, $event)"
               @delete="deletePathElement(branchIndex, pathIndex)"
             />
@@ -225,6 +225,14 @@ export default {
     /** Пул (для реактивного чтения lanes; приоритетнее чем lanes) */
     pool: {
       type: Object,
+      default: null,
+    },
+    /**
+     * id параллельного шлюза-разветвителя, внутри ветки которого находится этот элемент.
+     * Нужен для пункта «Переход к: шлюз слияния» (в BPMN это узел forkId-join).
+     */
+    parallelForkAncestorId: {
+      type: String,
       default: null,
     },
   },
@@ -331,6 +339,18 @@ export default {
         const laneName = lane.name || lane.id || 'Дорожка';
         (lane.elements || []).forEach((el) => pushOptions(el, laneName, ''));
       });
+
+      const forkId = props.parallelForkAncestorId && String(props.parallelForkAncestorId).trim();
+      if (forkId) {
+        const joinId = `${forkId}-join`;
+        if (joinId !== selfId && !options.some((o) => o.value === joinId)) {
+          options.unshift({
+            value: joinId,
+            title: 'Шлюз слияния (конец параллельного разветвления)',
+          });
+        }
+      }
+
       return options;
     });
 
@@ -725,6 +745,10 @@ export default {
   border-radius: 8px;
   background: #ffffff;
   transition: all 0.2s ease;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .element-editor.is-nested {
@@ -740,10 +764,12 @@ export default {
 .element-header-simple {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   padding: 12px;
   gap: 8px;
   cursor: pointer;
   user-select: none;
+  min-width: 0;
 }
 
 .element-header-simple {
@@ -763,6 +789,7 @@ export default {
 
 .element-label-input {
   flex: 1;
+  min-width: 0;
   border: none;
   outline: none;
   padding: 4px 8px;
@@ -796,10 +823,12 @@ export default {
 .next-element-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 12px;
   border-top: 1px solid #eee;
   background: #fafafa;
+  min-width: 0;
 }
 
 .next-element-label {
@@ -809,7 +838,11 @@ export default {
 }
 
 .next-element-select {
-  flex: 1;
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.next-element-select :deep(.v-input) {
   min-width: 0;
 }
 
@@ -871,7 +904,8 @@ export default {
 }
 
 .branch-condition-input {
-  flex: 1;
+  flex: 1 1 120px;
+  min-width: 0;
   border: none;
   outline: none;
   padding: 4px 8px;
@@ -889,8 +923,8 @@ export default {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
-  min-width: 200px;
+  flex: 1 1 100%;
+  min-width: 0;
   max-width: 100%;
 }
 .branch-lane-label {
@@ -900,9 +934,13 @@ export default {
   flex-shrink: 0;
 }
 .branch-lane-select {
-  flex: 1;
-  min-width: 140px;
-  max-width: 240px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.branch-lane-select :deep(.v-input) {
+  min-width: 0;
 }
 
 .lane-v-select {
@@ -937,6 +975,12 @@ export default {
 
 .task-type-select {
   font-size: 0.85rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.task-type-select :deep(.v-input) {
+  min-width: 0;
 }
 </style>
 
