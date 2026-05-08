@@ -2003,6 +2003,245 @@ function hasExplicitNextElementContinuation(el) {
 }
 
 /**
+ * Подсчёт количества входящих «стрелок» в события конца по структурной модели
+ * (без генерации полного BPMN-графа).
+ *
+ * Правило: стилистически нежелательно сводить все завершения в одно событие конца —
+ * вместо этого лучше явно моделировать разные варианты завершения.
+ *
+ * Здесь считаем «стрелками»:
+ * - неявные переходы в пределах массива элементов (следующий элемент в дорожке/ветви);
+ * - явные переходы через nextElementId;
+ * - переходы от шлюза к первому элементу ветви, если он является событием конца;
+ * - переходы от шлюза к явному целевому элементу branch.next, если он является событием конца.
+ */
+function incrementMapCounter(map, key) {
+  if (!key) return;
+  const prev = map.get(key) || 0;
+  map.set(key, prev + 1);
+}
+
+function collectEndEventIncomingCountsInPath(elements, incomingCounts, elementById) {
+  if (!elements || !Array.isArray(elements)) return;
+
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (!el || !el.type) continue;
+
+    const nextInList = i + 1 < elements.length ? elements[i + 1] : null;
+
+    // Шлюзы: считаем переходы от шлюза к первым элементам ветвей / branch.next
+    if (isGatewayType(el.type)) {
+      el.branches?.forEach((branch) => {
+        const branchPath = branch?.path || [];
+
+        if (!branchPath.length) {
+          // Пустая ветвь: используем branch.next, если он указывает на событие конца
+          const targetId = branch?.next;
+          if (targetId && elementById.has(targetId)) {
+            const targetEl = elementById.get(targetId);
+            if (targetEl && targetEl.type === 'endEvent') {
+              incrementMapCounter(incomingCounts, targetEl.id);
+            }
+          }
+          return;
+        }
+
+        const firstBranchEl = branchPath[0];
+        if (firstBranchEl && firstBranchEl.type === 'endEvent') {
+          incrementMapCounter(incomingCounts, firstBranchEl.id);
+        }
+
+        // Рекурсивно обходим вложенный путь ветви
+        collectEndEventIncomingCountsInPath(branchPath, incomingCounts, elementById);
+      });
+
+      // У самого шлюза стрелки до событий конца считаются через его ветви, поэтому
+      // здесь не добавляем переход к nextInList.
+      continue;
+    }
+
+    // Событие конца не имеет исходящих потоков
+    if (el.type === 'endEvent') {
+      continue;
+    }
+
+    // Явный переход «Переход к элементу»
+    const explicitNextId = hasExplicitNextElementContinuation(el) ? el.nextElementId : null;
+    if (explicitNextId && elementById.has(explicitNextId)) {
+      const targetEl = elementById.get(explicitNextId);
+      if (targetEl && targetEl.type === 'endEvent') {
+        incrementMapCounter(incomingCounts, targetEl.id);
+      }
+    } else if (nextInList && nextInList.type === 'endEvent') {
+      // Неявный переход к следующему элементу в массиве
+      incrementMapCounter(incomingCounts, nextInList.id);
+    }
+  }
+}
+
+/**
+ * Собирает карту { idСобытияКонца -> количество входящих переходов } по всей диаграмме.
+ */
+function collectEndEventIncomingCounts(diagram) {
+  const incomingCounts = new Map();
+  if (!diagram || !diagram.pools) return incomingCounts;
+
+  const all = getAllElements(diagram);
+  const elementById = new Map();
+  all.forEach((el) => {
+    if (el && el.id) {
+      elementById.set(el.id, el);
+    }
+  });
+
+  diagram.pools.forEach((pool) => {
+    pool?.lanes?.forEach((lane) => {
+      const els = lane?.elements || [];
+      collectEndEventIncomingCountsInPath(els, incomingCounts, elementById);
+    });
+  });
+
+  return incomingCounts;
+}
+
+/**
+ * Для проверки связности: собираем количество входящих переходов для всех элементов диаграммы.
+ * Используется, чтобы запретить «висящие» элементы без входа (кроме startEvent).
+ */
+function collectAllIncomingCountsInPath(elements, incomingCounts, elementById) {
+  if (!elements || !Array.isArray(elements)) return;
+
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (!el || !el.type || !el.id) continue;
+
+    const nextInList = i + 1 < elements.length ? elements[i + 1] : null;
+
+    if (isGatewayType(el.type)) {
+      el.branches?.forEach((branch) => {
+        const branchPath = branch?.path || [];
+
+        if (branchPath.length > 0) {
+          const firstBranchEl = branchPath[0];
+          if (firstBranchEl?.id) {
+            incrementMapCounter(incomingCounts, firstBranchEl.id);
+          }
+          collectAllIncomingCountsInPath(branchPath, incomingCounts, elementById);
+          return;
+        }
+
+        // Пустая ветвь: branch.next (если задан и существует)
+        const targetId = branch?.next;
+        if (targetId && elementById.has(targetId)) {
+          incrementMapCounter(incomingCounts, targetId);
+        }
+      });
+
+      // Неявный переход шлюза к следующему элементу в списке не добавляем:
+      // генератор делает split/join и продолжение после шлюза отдельной логикой.
+      continue;
+    }
+
+    if (el.type === 'endEvent') continue;
+
+    // Явный переход «Переход к элементу»
+    const explicitNextId = hasExplicitNextElementContinuation(el) ? el.nextElementId : null;
+    if (explicitNextId && elementById.has(explicitNextId)) {
+      incrementMapCounter(incomingCounts, explicitNextId);
+      continue;
+    }
+
+    // Неявный переход к следующему элементу в массиве
+    if (nextInList?.id && nextInList.type !== 'startEvent') {
+      incrementMapCounter(incomingCounts, nextInList.id);
+    }
+  }
+}
+
+function collectAllIncomingCounts(diagram) {
+  const incomingCounts = new Map();
+  if (!diagram || !diagram.pools) return incomingCounts;
+
+  const all = getAllElements(diagram);
+  const elementById = new Map();
+  all.forEach((el) => {
+    if (el?.id) elementById.set(el.id, el);
+  });
+
+  diagram.pools.forEach((pool) => {
+    pool?.lanes?.forEach((lane) => {
+      collectAllIncomingCountsInPath(lane?.elements || [], incomingCounts, elementById);
+    });
+  });
+
+  return incomingCounts;
+}
+
+function collectAllOutgoingCountsInPath(elements, outgoingCounts, elementById) {
+  if (!elements || !Array.isArray(elements)) return;
+
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (!el || !el.type || !el.id) continue;
+
+    const nextInList = i + 1 < elements.length ? elements[i + 1] : null;
+
+    if (isGatewayType(el.type)) {
+      el.branches?.forEach((branch) => {
+        const branchPath = branch?.path || [];
+
+        if (branchPath.length > 0) {
+          const firstBranchEl = branchPath[0];
+          if (firstBranchEl?.id) {
+            incrementMapCounter(outgoingCounts, el.id);
+          }
+          collectAllOutgoingCountsInPath(branchPath, outgoingCounts, elementById);
+          return;
+        }
+
+        const targetId = branch?.next;
+        if (targetId && elementById.has(targetId)) {
+          incrementMapCounter(outgoingCounts, el.id);
+        }
+      });
+      continue;
+    }
+
+    if (el.type === 'endEvent') continue;
+
+    const explicitNextId = hasExplicitNextElementContinuation(el) ? el.nextElementId : null;
+    if (explicitNextId && elementById.has(explicitNextId)) {
+      incrementMapCounter(outgoingCounts, el.id);
+      continue;
+    }
+
+    if (nextInList?.id && nextInList.type !== 'startEvent') {
+      incrementMapCounter(outgoingCounts, el.id);
+    }
+  }
+}
+
+function collectAllOutgoingCounts(diagram) {
+  const outgoingCounts = new Map();
+  if (!diagram || !diagram.pools) return outgoingCounts;
+
+  const all = getAllElements(diagram);
+  const elementById = new Map();
+  all.forEach((el) => {
+    if (el?.id) elementById.set(el.id, el);
+  });
+
+  diagram.pools.forEach((pool) => {
+    pool?.lanes?.forEach((lane) => {
+      collectAllOutgoingCountsInPath(lane?.elements || [], outgoingCounts, elementById);
+    });
+  });
+
+  return outgoingCounts;
+}
+
+/**
  * Хвост ветви шлюза: не «висящая» активность — либо конец, либо явный переход вне ветви,
  * либо вложенный шлюз с корректными хвостами, либо слияние в общий хвост дорожки после шлюза.
  *
@@ -2191,6 +2430,64 @@ export function validateDiagram(diagram) {
     const laneName = lane.name?.trim() || `дорожка ${laneIdx + 1}`;
     validateLinearFlowContinuity(els, errors, `В дорожке «${laneName}»:`);
     validateGatewaysInElementList(els, errors);
+  });
+
+  // BPMN-корректность: «висящие» элементы без входящих переходов запрещены (кроме startEvent).
+  // Этот кейс как раз ловит ситуации, когда несколько задач указывают nextElementId на конец,
+  // но при этом сами не достижимы из события начала.
+  const allIncoming = collectAllIncomingCounts(diagram);
+  const allOutgoing = collectAllOutgoingCounts(diagram);
+  flat.forEach((el) => {
+    if (!el?.id || !el.type) return;
+    if (el.type === 'startEvent') return;
+    const inc = allIncoming.get(el.id) || 0;
+    if (inc > 0) return;
+    const label = el.label?.trim() ? `«${el.label}»` : `(${el.type})`;
+    errors.push(`Элемент ${label} не имеет входящих переходов — он «висит» и не достижим из начала процесса.`);
+  });
+
+  // Правило моделирования: у задач (всех типов) должен быть ровно один вход и один выход.
+  // На практике проверяем верхнюю границу: не допускаем >1 входа или >1 выхода.
+  flat.forEach((el) => {
+    if (!el?.id || !el.type) return;
+    if (!TASK_LIKE_TYPES.has(el.type)) return;
+    const inc = allIncoming.get(el.id) || 0;
+    const out = allOutgoing.get(el.id) || 0;
+    if (inc <= 1 && out <= 1) return;
+    const label = el.label?.trim() ? `«${el.label}»` : `(${el.type})`;
+    if (inc > 1 && out > 1) {
+      errors.push(
+        `Логическая ошибка BPMN: задача ${label} имеет несколько входящих (${inc}) и исходящих (${out}) переходов. ` +
+          'Для задач допускается только один вход и один выход.',
+      );
+      return;
+    }
+    if (inc > 1) {
+      errors.push(
+        `Логическая ошибка BPMN: задача ${label} имеет несколько входящих переходов (${inc}). ` +
+          'Для задач допускается только один вход.',
+      );
+      return;
+    }
+    errors.push(
+      `Логическая ошибка BPMN: задача ${label} имеет несколько исходящих переходов (${out}). ` +
+        'Для задач допускается только один выход.',
+    );
+  });
+
+  // Стилевое правило: не сводить все варианты завершения в одно событие конца.
+  // В одно событие конца допустимо не более трёх входящих переходов.
+  const incomingCounts = collectEndEventIncomingCounts(diagram);
+  incomingCounts.forEach((count, endEventId) => {
+    if (count > 3) {
+      const endElement = flat.find((e) => e && e.id === endEventId);
+      const label = endElement?.label?.trim();
+      const labelPart = label ? ` «${label}»` : '';
+      errors.push(
+        `Логическая ошибка BPMN: слишком много связей с конечным событием${labelPart} — ${count} входящих переходов. ` +
+          'Разделите варианты завершения на несколько конечных событий (рекомендуется: не более 3 входящих переходов на одно событие).',
+      );
+    }
   });
 
   return {

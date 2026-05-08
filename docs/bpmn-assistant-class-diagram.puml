@@ -118,6 +118,27 @@ package "Сервер API (FastAPI)" as PKG_SERVER {
   }
 }
 
+' --- База данных (персистенция) ---
+package "База данных (PostgreSQL)" as PKG_DB {
+
+  class пользователи <<таблица>> {
+    + id: uuid
+    + email: text
+    + password_hash: text
+    + created_at: timestamptz
+  }
+
+  class сохранённые_модели <<таблица>> {
+    + id: uuid
+    + user_id: uuid
+    + title: text
+    + bpmn_xml: text
+    + updated_at: timestamptz
+  }
+
+  пользователи "1" -- "0..*" сохранённые_модели : «FK user_id»
+}
+
 ' --- Три вида отношений (по учебнику UML) ---
 ' *-- композиция | --> ассоциация (сплошая) | ..> зависимость (пунктир)
 
@@ -136,6 +157,8 @@ package "Сервер API (FastAPI)" as PKG_SERVER {
 ГенераторBpmnXml .right.> МодельДиаграммы : зависимость
 ЗапросПреобразованияBpmn .down.> ГенераторBpmnJson : зависимость
 ЗапросРазметкиBpmn .down.> СервисРазметкиBpmn : зависимость
+
+ПриложениеApi .down.> PKG_DB : зависимость\n«доступ к данным:\nпользователи и сохранённые BPMN»
 
 
 note bottom of МодельерBpmn

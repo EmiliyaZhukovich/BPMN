@@ -48,6 +48,10 @@ node "Хост приложения\nDocker Compose • сеть **bpmn-network*
     artifact "Node.js\n(авторазметка)" <<artifact>> as ART_NODE
     artifact "**layout_process.js**\n+ npm" <<artifact>> as ART_LAYOUT
   }
+
+  node "Сервис **postgres**\n**PostgreSQL**" <<executionEnvironment>> as NODE_DB {
+    database "БД приложения\n(**пользователи**,\n**сохранённые_модели**)" as ART_DB
+  }
 }
 
 ' Канал «устройство — хост» (TLS часто на корп. reverse proxy → те же порты)
@@ -63,6 +67,8 @@ ART_HTTP ..> ART_SPA : отдаёт файлы
 ART_PY ..> ART_PKG : <<deploy>>
 
 ART_PKG ..> ART_NODE : <<use>>\n**/process-bpmn**:\n**subprocess** Node.js
+
+ART_PKG ..> ART_DB : **TCP** **5432**\nсеть **bpmn-network**\nSQL / ORM
 
 ART_NODE ..> ART_LAYOUT : <<deploy>>
 

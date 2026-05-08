@@ -39,6 +39,10 @@ box "Сервер (FastAPI)" #F4F7FB
   participant "layout:СервисРазметкиBpmn" as layout <<контроллер>>
 end box
 
+box "База данных (PostgreSQL)" #F4F7FB
+  database "PostgreSQL" as db
+end box
+
 User -> panel: Настроить процесс,\nнажать «Построить диаграмму»
 activate panel
 
@@ -69,6 +73,10 @@ else Модель допустима для построения
       layout -> layout: авторазметка\n(bpmn-auto-layout)
       layout --> api: BPMN XML с разметкой
       deactivate layout
+      api -> db: SQL (**пользователи**, **сохранённые_модели**)
+      activate db
+      db --> api: результат
+      deactivate db
       api --> home: JSON: { layoutedXml }
       deactivate api
 
