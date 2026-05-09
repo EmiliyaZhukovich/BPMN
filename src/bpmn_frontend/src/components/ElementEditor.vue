@@ -30,15 +30,27 @@
 
     <div v-else class="element-header-simple">
       <v-icon :icon="getElementIcon(element)" size="small" class="element-type-icon" />
-      <input
-        v-model="localLabel"
-        @input="updateLabel"
-        :placeholder="getPlaceholder(element.type)"
-        class="element-label-input"
-        :class="{ 'has-error': hasError }"
-        :aria-label="`${getElementTypeLabel(element)} label`"
-        :aria-invalid="hasError"
-      />
+      <template v-if="element && element.type === 'textAnnotation'">
+        <textarea
+          v-model="localLabel"
+          @input="updateLabel"
+          placeholder="Текст аннотации"
+          class="element-label-input annotation-textarea"
+          rows="2"
+          @click.stop
+        />
+      </template>
+      <template v-else>
+        <input
+          v-model="localLabel"
+          @input="updateLabel"
+          :placeholder="getPlaceholder(element.type)"
+          class="element-label-input"
+          :class="{ 'has-error': hasError }"
+          :aria-label="`${getElementTypeLabel(element)} label`"
+          :aria-invalid="hasError"
+        />
+      </template>
       <v-btn
         icon="mdi-delete"
         size="x-small"
@@ -67,6 +79,78 @@
         class="next-element-select"
         @update:model-value="updateNextElement"
       />
+    </div>
+
+    <!-- Ассоциации (данные / аннотации) -->
+    <div v-if="showAssociations" class="associations-container">
+      <div class="associations-header">
+        <span class="associations-title">Ассоциации</span>
+        <v-btn
+          icon="mdi-plus"
+          size="x-small"
+          variant="text"
+          color="primary"
+          :title="'Добавить ассоциацию'"
+          @click.stop="addAssociationRow"
+        />
+        <v-btn
+          v-if="element && element.type !== 'dataObjectReference' && element.type !== 'dataStoreReference' && element.type !== 'textAnnotation'"
+          icon="mdi-note-plus-outline"
+          size="x-small"
+          variant="text"
+          color="secondary"
+          :title="'Добавить текстовую аннотацию'"
+          @click.stop="$emit('annotation:add')"
+        />
+      </div>
+
+      <div v-if="localOutgoingAssociations.length === 0" class="associations-empty">
+        Нет ассоциаций
+      </div>
+
+      <div
+        v-for="(assoc, idx) in localOutgoingAssociations"
+        :key="assoc._uiId"
+        class="association-row"
+      >
+        <v-select
+          :items="associationTargetOptions"
+          item-title="title"
+          item-value="value"
+          density="compact"
+          hide-details
+          class="association-target"
+          :model-value="assoc.targetRef"
+          placeholder="К чему привязать"
+          @update:model-value="(v) => updateAssociation(idx, { targetRef: v })"
+        />
+        <v-select
+          v-if="targetAllowsDirection(assoc.targetRef)"
+          :items="associationDirectionItems"
+          item-title="title"
+          item-value="value"
+          density="compact"
+          hide-details
+          class="association-direction"
+          :model-value="assoc.direction"
+          @update:model-value="(v) => updateAssociation(idx, { direction: v })"
+        />
+        <input
+          v-if="!targetIsTextAnnotation(assoc.targetRef) && element && element.type !== 'textAnnotation'"
+          :value="assoc.label"
+          @input="(e) => updateAssociation(idx, { label: e.target.value })"
+          placeholder="Подпись (опц.)"
+          class="association-label"
+        />
+        <v-btn
+          icon="mdi-close"
+          size="x-small"
+          variant="text"
+          color="error"
+          :title="'Удалить ассоциацию'"
+          @click.stop="removeAssociationRow(idx)"
+        />
+      </div>
     </div>
 
     <div v-if="isGateway && expanded" class="gateway-content">
@@ -236,7 +320,7 @@ export default {
       default: null,
     },
   },
-  emits: ['update', 'delete'],
+  emits: ['update', 'delete', 'associations:update', 'annotation:add'],
   setup(props, { emit }) {
     const expanded = ref(true);
     const localLabel = ref(props.element.label || '');
@@ -306,6 +390,9 @@ export default {
     const canHaveNextElement = computed(
       () =>
         !isGateway.value &&
+        props.element.type !== 'dataObjectReference' &&
+        props.element.type !== 'dataStoreReference' &&
+        props.element.type !== 'textAnnotation' &&
         props.element.type !== 'endEvent'
     );
 
@@ -353,6 +440,155 @@ export default {
 
       return options;
     });
+
+    const showAssociations = computed(() => Boolean(diagram.value));
+
+    const associationDirectionItems = [
+      { title: 'Без направления', value: 'none' },
+      { title: 'К объекту', value: 'to' },
+      { title: 'От объекта', value: 'from' },
+    ];
+
+    function collectAssociationTargetOptions() {
+      const d = diagram.value;
+      if (!d) return [];
+      const options = [];
+      const selfId = props.element?.id;
+
+      const lanes = getLanes();
+      lanes.forEach((lane) => {
+        const laneName = lane?.name || lane?.id || 'Дорожка';
+        (lane.elements || []).forEach((el) => {
+          if (!el?.id || el.id === selfId) return;
+          const label = (el.label && String(el.label).trim()) || getElementTypeLabel(el);
+          options.push({ value: el.id, title: `${label} — ${laneName}` });
+        });
+      });
+
+      (d.artifacts || []).forEach((a) => {
+        if (!a?.id || a.id === selfId) return;
+        const title =
+          a.type === 'textAnnotation'
+            ? `Аннотация: ${(a.label && String(a.label).trim()) || '(без текста)'}`
+            : `${getElementTypeLabel(a)}: ${(a.label && String(a.label).trim()) || '(без названия)'}`;
+        options.push({ value: a.id, title });
+      });
+
+      return options;
+    }
+
+    const associationTargetOptions = computed(() => collectAssociationTargetOptions());
+
+    function getNodeTypeById(id) {
+      if (!id) return null;
+      const lanes = getLanes();
+      let found = null;
+      function walk(el) {
+        if (!el || found) return;
+        if (el.id === id) {
+          found = el.type;
+          return;
+        }
+        if (el.branches) {
+          el.branches.forEach((b) => (b.path || []).forEach(walk));
+        }
+      }
+      lanes.forEach((lane) => (lane.elements || []).forEach(walk));
+      return found;
+    }
+
+    function targetAllowsDirection(targetRef) {
+      // Direction choice only for data objects / data stores.
+      const t = getNodeTypeById(targetRef);
+      return t === 'dataObjectReference' || t === 'dataStoreReference';
+    }
+
+    function targetIsTextAnnotation(targetRef) {
+      const t = getNodeTypeById(targetRef);
+      return t === 'textAnnotation';
+    }
+
+    const localOutgoingAssociations = ref([]);
+
+    function syncOutgoingAssociationsFromDiagram() {
+      const d = diagram.value;
+      const id = props.element?.id;
+      if (!d || !id) {
+        localOutgoingAssociations.value = [];
+        return;
+      }
+      const assocs = Array.isArray(d.associations) ? d.associations : [];
+      localOutgoingAssociations.value = assocs
+        .filter((a) => a && a.sourceRef === id)
+        .map((a) => ({
+          _uiId: a.id || `${Date.now()}_${Math.random()}`,
+          id: a.id,
+          targetRef: a.targetRef,
+          label: a.label || '',
+          direction: a.direction || 'none',
+        }));
+    }
+
+    watch(
+      () => [diagram.value?.associations, props.element?.id],
+      () => syncOutgoingAssociationsFromDiagram(),
+      { deep: true, immediate: true }
+    );
+
+    function emitAssociationsUpdate(nextOutgoing) {
+      const d = diagram.value;
+      const id = props.element?.id;
+      if (!d || !id) return;
+      const all = Array.isArray(d.associations) ? d.associations : [];
+      const kept = all.filter((a) => !(a && a.sourceRef === id));
+      const next = (nextOutgoing || [])
+        .filter((a) => a && a.targetRef)
+        .map((a) => ({
+          id: a.id || undefined,
+          sourceRef: id,
+          targetRef: a.targetRef,
+          label: a.label || '',
+          direction: a.direction || 'none',
+        }));
+      emit('associations:update', [...kept, ...next]);
+    }
+
+    function addAssociationRow() {
+      const next = [...localOutgoingAssociations.value];
+      next.push({
+        _uiId: `${Date.now()}_${Math.random()}`,
+        id: undefined,
+        targetRef: '',
+        label: '',
+        direction: 'none',
+      });
+      localOutgoingAssociations.value = next;
+      emitAssociationsUpdate(next);
+    }
+
+    function updateAssociation(idx, patch) {
+      const next = [...localOutgoingAssociations.value];
+      if (!next[idx]) return;
+      next[idx] = { ...next[idx], ...patch };
+      // If target isn't data/db, force direction = none. For textAnnotation always none.
+      const tgt = next[idx].targetRef;
+      if (!targetAllowsDirection(tgt)) {
+        next[idx].direction = 'none';
+      }
+      if (targetIsTextAnnotation(tgt) || props.element?.type === 'textAnnotation') {
+        next[idx].label = '';
+        next[idx].direction = 'none';
+      }
+      localOutgoingAssociations.value = next;
+      emitAssociationsUpdate(next);
+    }
+
+    function removeAssociationRow(idx) {
+      const next = [...localOutgoingAssociations.value];
+      next.splice(idx, 1);
+      localOutgoingAssociations.value = next;
+      emitAssociationsUpdate(next);
+    }
 
     function updateNextElement(value) {
       const updatedElement = JSON.parse(JSON.stringify(props.element));
@@ -596,6 +832,9 @@ export default {
         parallelGateway: 'mdi-source-merge',
         eventBasedGateway: 'mdi-ray-start-arrow',
         complexGateway: 'mdi-vector-polyline',
+        dataObjectReference: 'mdi-file-document-outline',
+        dataStoreReference: 'mdi-database',
+        textAnnotation: 'mdi-note-text-outline',
       };
       return icons[type] || 'mdi-circle';
     }
@@ -627,6 +866,9 @@ export default {
         parallelGateway: 'Параллельные процессы',
         eventBasedGateway: 'Шлюз по событиям',
         complexGateway: 'Комплексный шлюз',
+        dataObjectReference: 'Объект данных',
+        dataStoreReference: 'Хранилище данных',
+        textAnnotation: 'Текстовая аннотация',
       };
       return labels[type] || type;
     }
@@ -712,6 +954,15 @@ export default {
       canHaveNextElement,
       nextElementOptions,
       updateNextElement,
+      showAssociations,
+      associationTargetOptions,
+      associationDirectionItems,
+      targetAllowsDirection,
+      targetIsTextAnnotation,
+      localOutgoingAssociations,
+      addAssociationRow,
+      updateAssociation,
+      removeAssociationRow,
       taskTypes,
       taskTypeValue,
       toggleExpanded,
@@ -844,6 +1095,51 @@ export default {
 
 .next-element-select :deep(.v-input) {
   min-width: 0;
+}
+
+.annotation-textarea {
+  resize: vertical;
+  min-height: 44px;
+}
+
+.associations-container {
+  padding: 8px 12px;
+  border-top: 1px dashed rgba(0, 0, 0, 0.18);
+  background: #ffffff;
+}
+
+.associations-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.associations-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.associations-empty {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  margin-bottom: 6px;
+}
+
+.association-row {
+  display: grid;
+  grid-template-columns: 1.2fr 0.9fr 1fr auto;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.association-label {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 6px;
+  font-size: 0.85rem;
 }
 
 .gateway-question-section {

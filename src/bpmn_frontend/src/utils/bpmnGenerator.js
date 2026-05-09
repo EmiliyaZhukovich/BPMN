@@ -55,6 +55,7 @@ export function generateBpmnXml(diagramOrProcess) {
   const elementMap = new Map();
   const endEventMap = new Map(); // Map to track end events by label for merging duplicates
   const pendingConnections = []; // Store connections that need to be made in second pass
+  const ARTIFACT_TYPES = new Set(['dataObjectReference', 'dataStoreReference', 'textAnnotation']);
 
   // Helper to add flow
   function addFlow(sourceRef, targetRef, condition = null, flowId = null) {
@@ -346,6 +347,27 @@ export function generateBpmnXml(diagramOrProcess) {
   // Диаграмма «Процесс» — один пул с дорожками
   const processes = new Map();
   const participants = [];
+  const associations = Array.isArray(diagram.associations) ? diagram.associations : [];
+
+  // Collect artifacts from lanes (they are placed "near" flow elements in the same list)
+  const artifacts = [];
+  diagram?.pools?.forEach((pool) => {
+    pool?.lanes?.forEach((lane) => {
+      (lane.elements || []).forEach((el) => {
+        if (el && ARTIFACT_TYPES.has(el.type)) {
+          artifacts.push(el);
+        }
+      });
+    });
+  });
+
+  // Ensure ids for artifacts/associations
+  artifacts.forEach((a) => {
+    if (a && !a.id) a.id = generateId(a.type || 'artifact');
+  });
+  associations.forEach((a) => {
+    if (a && !a.id) a.id = generateId('association');
+  });
 
   diagram.pools.forEach((pool) => {
     const processId = `Process_${pool.id}`;
@@ -355,13 +377,14 @@ export function generateBpmnXml(diagramOrProcess) {
     const laneElementMap = new Map();
 
     pool.lanes?.forEach((lane) => {
-      if (lane.elements && lane.elements.length > 0) {
-        lane.elements.forEach((elem) => {
+      const laneElements = (lane.elements || []).filter((e) => e && !ARTIFACT_TYPES.has(e.type));
+      if (laneElements.length > 0) {
+        laneElements.forEach((elem) => {
           if (!elem.id) {
             elem.id = generateId(elem.type);
           }
         });
-        const transformedLaneElements = transformProcess(lane.elements, null, poolEndEventMap, poolPendingConnections);
+        const transformedLaneElements = transformProcess(laneElements, null, poolEndEventMap, poolPendingConnections);
         poolElements.push(...transformedLaneElements);
       }
     });
@@ -388,7 +411,8 @@ export function generateBpmnXml(diagramOrProcess) {
       });
     }
     pool.lanes?.forEach((lane) => {
-      addFlowsFromNextElementIdTree(lane.elements);
+      const laneElements = (lane.elements || []).filter((e) => e && !ARTIFACT_TYPES.has(e.type));
+      addFlowsFromNextElementIdTree(laneElements);
     });
 
     /**
@@ -429,7 +453,8 @@ export function generateBpmnXml(diagramOrProcess) {
     }
 
     pool.lanes?.forEach((lane) => {
-      ensureJoinFlowToLaneSuccessor(lane.elements || []);
+      const laneElements = (lane.elements || []).filter((e) => e && !ARTIFACT_TYPES.has(e.type));
+      ensureJoinFlowToLaneSuccessor(laneElements);
     });
 
     // Карта: элемент (id) → индекс ветки (0, 1, …) для элементов внутри gateway.branches[].path в одной дорожке
@@ -438,6 +463,7 @@ export function generateBpmnXml(diagramOrProcess) {
     function collectElementIdsByLane(elements, laneId, map, branchIndex) {
       if (!elements) return;
       elements.forEach((el) => {
+        if (el && ARTIFACT_TYPES.has(el.type)) return;
         if (!el.id) el.id = generateId(el.type);
         let arr = map.get(laneId);
         if (!arr) {
@@ -462,8 +488,9 @@ export function generateBpmnXml(diagramOrProcess) {
       laneElementMap.set(lane.id, []);
     });
     pool.lanes?.forEach((lane) => {
-      if (lane.elements && lane.elements.length > 0) {
-        collectElementIdsByLane(lane.elements, lane.id, laneElementMap);
+      const laneElements = (lane.elements || []).filter((e) => e && !ARTIFACT_TYPES.has(e.type));
+      if (laneElements.length > 0) {
+        collectElementIdsByLane(laneElements, lane.id, laneElementMap);
       }
     });
 
@@ -474,6 +501,8 @@ export function generateBpmnXml(diagramOrProcess) {
       lanes: pool.lanes || [],
       laneElementMap,
       elementToBranchIndex,
+      artifacts,
+      associations,
     });
 
     participants.push({
@@ -727,6 +756,74 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     // Add elements
     processInfo.elements.forEach((element) => {
       xml += buildFlowNodeXml(element, '    ');
+    });
+
+    // Add artifacts / data objects (not flow nodes)
+    const procArtifactIds = new Set((processInfo.artifacts || []).map((a) => a && a.id).filter(Boolean));
+    const dataStoresWritten = new Set();
+    (processInfo.artifacts || []).forEach((a) => {
+      if (!a?.id || !a.type) return;
+      if (a.type === 'textAnnotation') {
+        xml += `    <textAnnotation id="${a.id}">\n`;
+        const text = a.label != null ? escapeXml(String(a.label)) : '';
+        xml += `      <text>${text}</text>\n`;
+        xml += `    </textAnnotation>\n`;
+        return;
+      }
+      if (a.type === 'dataObjectReference') {
+        const name = a.label != null && String(a.label).trim() !== '' ? ` name="${escapeXml(String(a.label))}"` : '';
+        xml += `    <dataObjectReference id="${a.id}"${name}/>\n`;
+        return;
+      }
+      if (a.type === 'dataStoreReference') {
+        const storeId = `DataStore_${a.id}`;
+        if (!dataStoresWritten.has(storeId)) {
+          dataStoresWritten.add(storeId);
+          xml += `    <dataStore id="${storeId}"/>\n`;
+        }
+        const name = a.label != null && String(a.label).trim() !== '' ? ` name="${escapeXml(String(a.label))}"` : '';
+        xml += `    <dataStoreReference id="${a.id}" dataStoreRef="${storeId}"${name}/>\n`;
+      }
+    });
+
+    // Add associations (for data / annotations)
+    const typeById = new Map();
+    processInfo.elements.forEach((el) => {
+      if (el?.id && el.type) typeById.set(el.id, el.type);
+    });
+    (processInfo.artifacts || []).forEach((a) => {
+      if (a?.id && a.type) typeById.set(a.id, a.type);
+    });
+
+    (processInfo.associations || []).forEach((a) => {
+      if (!a?.id || !a.sourceRef || !a.targetRef) return;
+      if (!procArtifactIds.has(a.sourceRef) && !procArtifactIds.has(a.targetRef)) {
+        // allow associations from/to flow nodes too; just ensure refs exist somewhere in this process
+      }
+      let sourceRef = a.sourceRef;
+      let targetRef = a.targetRef;
+      const srcType = typeById.get(a.sourceRef);
+      const tgtType = typeById.get(a.targetRef);
+      const involvesTextAnnotation = srcType === 'textAnnotation' || tgtType === 'textAnnotation';
+      const involvesData = srcType === 'dataObjectReference' || srcType === 'dataStoreReference' ||
+        tgtType === 'dataObjectReference' || tgtType === 'dataStoreReference';
+
+      // Normalize for textAnnotation: keep source as non-annotation, target as annotation (like bpmn-js exports)
+      if (involvesTextAnnotation && srcType === 'textAnnotation' && tgtType !== 'textAnnotation') {
+        sourceRef = a.targetRef;
+        targetRef = a.sourceRef;
+      }
+
+      if (!involvesTextAnnotation && involvesData && a.direction === 'from') {
+        // interpret as arrow "from object": swap direction visually by swapping ends
+        sourceRef = a.targetRef;
+        targetRef = a.sourceRef;
+      }
+      const dirAttr = (!involvesTextAnnotation && involvesData && a.direction && a.direction !== 'none')
+        ? 'One'
+        : 'None';
+      const name = a.label != null && String(a.label).trim() !== '' ? ` name="${escapeXml(String(a.label))}"` : '';
+      xml += `    <association id="${a.id}" sourceRef="${sourceRef}" targetRef="${targetRef}" associationDirection="${dirAttr}"${name}/>\n`;
     });
 
     // Add sequence flows for this process (filter flows by elements in this process)
@@ -1673,6 +1770,88 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     });
   });
 
+  // --- Artifacts (data objects, data stores, text annotations) ---
+  const allArtifacts = [];
+  processes.forEach((processInfo) => {
+    (processInfo.artifacts || []).forEach((a) => allArtifacts.push(a));
+  });
+  // Include artifacts in type lookup (needed for association routing)
+  allArtifacts.forEach((a) => {
+    if (a?.id && a.type) elementTypeById.set(a.id, a.type);
+  });
+  const assocList = [];
+  processes.forEach((processInfo) => {
+    (processInfo.associations || []).forEach((a) => assocList.push(a));
+  });
+  const artifactIds = new Set(allArtifacts.map((a) => a && a.id).filter(Boolean));
+  const associationsForArtifact = new Map(); // artifactId -> [{ otherId, assoc }]
+  assocList.forEach((a) => {
+    if (!a?.sourceRef || !a.targetRef) return;
+    if (artifactIds.has(a.sourceRef)) {
+      const arr = associationsForArtifact.get(a.sourceRef) || [];
+      arr.push({ otherId: a.targetRef, assoc: a });
+      associationsForArtifact.set(a.sourceRef, arr);
+    }
+    if (artifactIds.has(a.targetRef)) {
+      const arr = associationsForArtifact.get(a.targetRef) || [];
+      arr.push({ otherId: a.sourceRef, assoc: a });
+      associationsForArtifact.set(a.targetRef, arr);
+    }
+  });
+  const artifactStackCounter = new Map(); // key anchorId+type -> count
+  allArtifacts.forEach((a) => {
+    if (!a?.id || !a.type) return;
+    const links = associationsForArtifact.get(a.id) || [];
+    const anchorId = links.length ? links[0].otherId : null;
+    const anchorPos = anchorId ? elementPositionMap.get(anchorId) : null;
+    const anchorSize = anchorId ? (elementSizeMap.get(anchorId) || { w: 36, h: 36 }) : { w: 36, h: 36 };
+
+    function sizeForTextAnnotation(text) {
+      const raw = text != null ? String(text) : '';
+      const t = raw.trim();
+      if (!t) return { w: 120, h: 44 };
+      // Approx monospace-ish measurement: ~7px per char + padding, clamp to sane BPMN sizes
+      const maxCharsPerLine = 26;
+      const lines = Math.max(1, Math.ceil(t.length / maxCharsPerLine));
+      const longest = Math.min(maxCharsPerLine, t.length);
+      const w = Math.max(120, Math.min(260, 24 + longest * 7));
+      const h = Math.max(44, Math.min(160, 26 + lines * 18));
+      return { w, h };
+    }
+
+    const size =
+      a.type === 'textAnnotation'
+        ? sizeForTextAnnotation(a.label)
+        : a.type === 'dataStoreReference'
+          ? { w: 60, h: 60 }
+          : { w: 50, h: 50 };
+    elementSizeMap.set(a.id, size);
+
+    let x = anchorPos ? anchorPos.x : 220;
+    let y = anchorPos ? anchorPos.y : 220;
+    const key = `${anchorId || 'none'}:${a.type}`;
+    const stack = artifactStackCounter.get(key) || 0;
+    artifactStackCounter.set(key, stack + 1);
+
+    if (anchorPos) {
+      if (a.type === 'textAnnotation') {
+        // Place above and to the right of the element (like bpmn-js typical placement)
+        x = anchorPos.x + anchorSize.w / 2 + size.w / 2 + 14 + stack * 14;
+        y = anchorPos.y - anchorSize.h / 2 - size.h / 2 - 22 - stack * 10;
+      } else if (a.type === 'dataStoreReference') {
+        x = anchorPos.x + stack * 18;
+        y = anchorPos.y + anchorSize.h / 2 + 80 + stack * 18;
+      } else {
+        // dataObjectReference
+        x = anchorPos.x + stack * 18;
+        y = anchorPos.y - anchorSize.h / 2 - 80 - stack * 18;
+      }
+    }
+
+    elementPositionMap.set(a.id, { x, y });
+    pushShape(a.id, a.id, x - size.w / 2, y - size.h / 2, size.w, size.h);
+  });
+
   // Edges for sequence flows
   sequenceFlows.forEach((flow) => {
     const src = elementPositionMap.get(flow.sourceRef);
@@ -1916,6 +2095,37 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     }
   });
 
+  // Edges for associations (data / annotations)
+  assocList.forEach((a) => {
+    if (!a?.id || !a.sourceRef || !a.targetRef) return;
+    // Normalize for textAnnotation edges: draw from element -> annotation
+    const srcType = elementTypeById.get(a.sourceRef);
+    const tgtType = elementTypeById.get(a.targetRef);
+    let srcRef = a.sourceRef;
+    let tgtRef = a.targetRef;
+    if (srcType === 'textAnnotation' && tgtType !== 'textAnnotation') {
+      srcRef = a.targetRef;
+      tgtRef = a.sourceRef;
+    }
+
+    const src = elementPositionMap.get(srcRef);
+    const tgt = elementPositionMap.get(tgtRef);
+    if (!src || !tgt) return;
+    const srcSize = elementSizeMap.get(srcRef) || { w: 36, h: 36 };
+    const tgtSize = elementSizeMap.get(tgtRef) || { w: 36, h: 36 };
+
+    const isToTextAnnotation = elementTypeById.get(tgtRef) === 'textAnnotation';
+
+    const start = isToTextAnnotation
+      ? { x: src.x, y: src.y - srcSize.h / 2 } // top center of element
+      : { x: src.x + srcSize.w / 2, y: src.y }; // default
+    const end = isToTextAnnotation
+      ? { x: tgt.x, y: tgt.y + tgtSize.h / 2 } // bottom center of annotation
+      : { x: tgt.x - tgtSize.w / 2, y: tgt.y }; // default
+    const targetForLabel = { x: tgt.x, y: tgt.y, w: tgtSize.w, h: tgtSize.h };
+    pushEdge(a.id, a.id, start, end, a.label || '', targetForLabel);
+  });
+
   // Add BPMNDI with generated shapes/edges
   xml += `  <bpmndi:BPMNDiagram id="BPMNDiagram_1">\n`;
   xml += `    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_1">\n`;
@@ -1954,6 +2164,9 @@ function mapElementTypeToTag(type) {
     complexGateway: 'complexGateway',
     intermediateThrowEvent: 'intermediateThrowEvent',
     intermediateCatchEvent: 'intermediateCatchEvent',
+    dataObjectReference: 'dataObjectReference',
+    dataStoreReference: 'dataStoreReference',
+    textAnnotation: 'textAnnotation',
   };
   return mapping[type] || 'task';
 }
@@ -2369,6 +2582,9 @@ function validateLinearFlowContinuity(elements, errors, contextPhrase, opts = {}
     if (!el?.type) continue;
     if (el.type === 'endEvent') continue;
     if (el.type === 'startEvent') continue;
+    if (el.type === 'dataObjectReference') continue;
+    if (el.type === 'dataStoreReference') continue;
+    if (el.type === 'textAnnotation') continue;
     if (isGatewayType(el.type)) continue;
 
     const isLast = i === elements.length - 1;

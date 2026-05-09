@@ -135,6 +135,35 @@ export class DiagramModel {
   }
 
   /**
+   * Create a new artifact / data element (not a flow node).
+   * Supported: textAnnotation, dataObjectReference, dataStoreReference
+   * @param {string} type
+   * @param {string} label
+   */
+  static createArtifact(type, label = '') {
+    const artifact = {
+      id: DiagramModel._id('artifact'),
+      type,
+      label,
+    };
+    return artifact;
+  }
+
+  /**
+   * Create a new association (for data / annotations).
+   * direction: 'none' | 'to' | 'from' (relative to sourceRef -> targetRef)
+   */
+  static createAssociation(sourceRef, targetRef, label = '', direction = 'none') {
+    return {
+      id: DiagramModel._id('assoc'),
+      sourceRef,
+      targetRef,
+      label,
+      direction,
+    };
+  }
+
+  /**
    * Get all elements from diagram (flattened for validation)
    */
   static getAllElements(diagram) {
@@ -221,6 +250,14 @@ export function createLane(name = 'Новая дорожка') {
  */
 export function createElement(type, label = '', options = {}) {
   return DiagramModel.createElement(type, label, options);
+}
+
+export function createArtifact(type, label = '') {
+  return DiagramModel.createArtifact(type, label);
+}
+
+export function createAssociation(sourceRef, targetRef, label = '', direction = 'none') {
+  return DiagramModel.createAssociation(sourceRef, targetRef, label, direction);
 }
 
 /**

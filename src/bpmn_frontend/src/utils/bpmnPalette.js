@@ -99,10 +99,23 @@ export const BPMN_PALETTE_GROUPS = [
     ],
   },
   {
+    title: 'Данные',
+    items: [
+      { type: 'dataObjectReference', title: 'Объект данных', icon: 'mdi-file-document-outline', addAfter: true },
+      { type: 'dataStoreReference', title: 'Хранилище данных', icon: 'mdi-database', addAfter: true },
+    ],
+  },
+  {
     title: 'Составные действия',
     items: [
       { type: 'subProcess', title: 'Подпроцесс', icon: 'mdi-file-tree', addAfter: true },
       { type: 'callActivity', title: 'Вызов процесса (Call Activity)', icon: 'mdi-phone-in-talk', addAfter: true },
+    ],
+  },
+  {
+    title: 'Артефакты',
+    items: [
+      { type: 'textAnnotation', title: 'Текстовая аннотация', icon: 'mdi-note-text-outline', addAfter: true },
     ],
   },
   {

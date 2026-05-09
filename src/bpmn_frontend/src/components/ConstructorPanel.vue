@@ -161,6 +161,8 @@
                     :lanes="currentPool?.lanes || []"
                     @update="updateElement(0, laneIndex, elementIndex, $event)"
                     @delete="deleteElement(0, laneIndex, elementIndex)"
+                    @associations:update="setAssociations($event)"
+                    @annotation:add="addAnnotationForElement(element.id)"
                   />
                   <div class="add-after-section">
                     <v-menu>
@@ -319,6 +321,7 @@ import {
   createLane,
   createElement,
   getAllElements,
+  createAssociation,
 } from '../utils/diagramModel';
 import { BPMN_PALETTE_GROUPS } from '../utils/bpmnPalette.js';
 
@@ -482,6 +485,29 @@ export default {
       lane.elements.push(element);
       selectedLaneIndex.value = laneIndex;
       saveToHistory();
+    }
+
+    function setAssociations(nextAssociations) {
+      diagram.value.associations = Array.isArray(nextAssociations) ? nextAssociations : [];
+      saveToHistory();
+    }
+
+    function addAnnotationForElement(targetElementId) {
+      if (!targetElementId) return;
+      if (!diagram.value.associations) diagram.value.associations = [];
+      const pool = diagram.value?.pools?.[0];
+      if (!pool?.lanes) return;
+      for (const lane of pool.lanes) {
+        const idx = (lane.elements || []).findIndex((e) => e && e.id === targetElementId);
+        if (idx !== -1) {
+          const annotation = createElement('textAnnotation', '');
+          lane.elements.splice(idx + 1, 0, annotation);
+          // Association direction for textAnnotation is always None; in BPMN it usually goes from element -> annotation
+          diagram.value.associations.push(createAssociation(targetElementId, annotation.id, '', 'none'));
+          saveToHistory();
+          return;
+        }
+      }
     }
 
     function addLane() {
@@ -727,6 +753,8 @@ export default {
       canRedo,
       addElement,
       addElementToLane,
+      setAssociations,
+      addAnnotationForElement,
       addLane,
       deleteLane,
       updateElement: updateElementLegacy,
