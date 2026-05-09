@@ -16,12 +16,15 @@
         :style="{ width: `${constructorWidth}px` }"
       >
         <ConstructorPanel
+          ref="constructorPanel"
           :key="panelKey"
+          :editor-session-key="editorSessionKey"
           :initial-save-state="initialSaveState"
           @bpmn-xml-updated="handleBpmnXml"
           @export-png="exportPng"
           @export-svg="exportSvg"
           @save-diagram="handleSaveDiagram"
+          @notify="onConstructorNotify"
         />
       </div>
       <div
@@ -51,6 +54,7 @@ import BpmnModeler from 'bpmn-js/lib/Modeler';
 import ConstructorPanel from '../components/ConstructorPanel.vue';
 import { bpmnLayoutServerUrl } from '../config';
 import { getSavedDiagram, upsertSavedDiagram } from '../utils/diagramStorage';
+import { importBpmnXmlToDiagram } from '../utils/bpmnXmlImporter';
 import 'bpmn-js/dist/assets/diagram-js.css';
 import 'bpmn-js/dist/assets/bpmn-js.css';
 import 'bpmn-js/dist/assets/bpmn-font/css/bpmn-embedded.css';
@@ -88,6 +92,10 @@ export default {
   computed: {
     diagramRouteId() {
       return this.$route.params.id || null;
+    },
+    /** Стабильный ключ сессии: только смена маршрута/panelKey, не пересчёт parent computed */
+    editorSessionKey() {
+      return `${this.diagramRouteId || 'none'}:${this.panelKey}`;
     },
     initialSaveState() {
       const id = this.diagramRouteId;
@@ -143,6 +151,11 @@ export default {
   methods: {
     goHome() {
       this.$router.push({ name: 'home' });
+    },
+    onConstructorNotify(payload) {
+      const text = payload?.text || '';
+      const color = payload?.color || 'success';
+      this.showSnackbar(text, color);
     },
     handleSaveDiagram(payload) {
       const id = this.diagramRouteId;
@@ -254,17 +267,25 @@ export default {
           if (event.dataTransfer.items[i].kind === 'file') {
             const file = event.dataTransfer.items[i].getAsFile();
 
-            if (file.name.endsWith('.bpmn')) {
+            const lower = file.name.toLowerCase();
+            if (lower.endsWith('.bpmn') || lower.endsWith('.bpm') || lower.endsWith('.xml')) {
               const reader = new FileReader();
               reader.onload = async (e) => {
                 const xmlContent = e.target.result;
                 try {
-                  await this.bpmnViewer.importXML(xmlContent);
-                  this.bpmnViewer.get('canvas').zoom('fit-viewport');
-                  console.log('BPMN diagram loaded successfully');
-                  this.bpmnXml = xmlContent;
+                  const imp = await importBpmnXmlToDiagram(xmlContent);
+                  if (imp.error) {
+                    this.showSnackbar(imp.error, 'error');
+                    return;
+                  }
+                  this.$refs.constructorPanel?.applyImportedDiagram(
+                    imp.diagram,
+                    xmlContent,
+                    imp.warnings
+                  );
                 } catch (err) {
                   console.error('Failed to import BPMN diagram:', err);
+                  this.showSnackbar(err.message || 'Ошибка импорта BPMN', 'error');
                 }
               };
               reader.readAsText(file);

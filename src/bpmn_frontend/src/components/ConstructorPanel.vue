@@ -6,6 +6,25 @@
         <h2 class="panel-title">Конструктор BPMN</h2>
       </div>
       <div class="header-actions">
+        <input
+          ref="bpmnFileInput"
+          type="file"
+          class="visually-hidden"
+          accept=".bpmn,.bpm,.xml,application/xml,text/xml"
+          @change="onBpmnFileSelected"
+        />
+        <v-tooltip text="Импорт BPMN из файла (.bpmn / .bpm)" location="bottom">
+          <template v-slot:activator="{ props }">
+            <v-btn
+              v-bind="props"
+              icon="mdi-file-upload-outline"
+              variant="text"
+              size="small"
+              color="primary"
+              @click="openBpmnImport"
+            />
+          </template>
+        </v-tooltip>
         <v-menu>
           <template v-slot:activator="{ props }">
             <v-btn
@@ -322,9 +341,10 @@
 </template>
 
 <script>
-import { ref, computed, watch, onMounted, provide } from 'vue';
+import { ref, computed, watch, onMounted, provide, defineExpose } from 'vue';
 import ElementEditor from './ElementEditor.vue';
 import { generateBpmnXml, validateDiagram } from '../utils/bpmnGenerator';
+import { importBpmnXmlToDiagram } from '../utils/bpmnXmlImporter';
 import { getTemplate, getAllTemplates } from '../utils/templates';
 import {
   createEmptyDiagram,
@@ -347,8 +367,13 @@ export default {
       type: Object,
       default: null,
     },
+    /** При смене открытой диаграммы подставляем модель из initialSaveState; без смены — не трогаем (импорт/редактирование) */
+    editorSessionKey: {
+      type: String,
+      default: '',
+    },
   },
-  emits: ['bpmn-xml-updated', 'save-diagram'],
+  emits: ['bpmn-xml-updated', 'save-diagram', 'notify'],
   setup(props, { emit }) {
     // New diagram structure with pools/lanes
     const diagram = ref(createEmptyDiagram());
@@ -372,6 +397,7 @@ export default {
     const history = ref([createEmptyDiagram()]);
     const historyIndex = ref(0);
     const templates = getAllTemplates();
+    const bpmnFileInput = ref(null);
     const diagramBuilt = ref(false);
     const draggedIndex = ref(null);
     const dragOverIndex = ref(null);
@@ -436,8 +462,6 @@ export default {
       { deep: true }
     );
 
-    const initialRev = computed(() => props.initialSaveState?._rev ?? null);
-
     function applyInitialSaveState(state) {
       if (!state?.diagram) return;
       diagram.value = JSON.parse(JSON.stringify(state.diagram));
@@ -463,9 +487,9 @@ export default {
     }
 
     watch(
-      initialRev,
-      (rev) => {
-        if (!rev || !props.initialSaveState?.diagram) return;
+      () => props.editorSessionKey,
+      () => {
+        if (!props.initialSaveState?._rev || !props.initialSaveState?.diagram) return;
         applyInitialSaveState(props.initialSaveState);
       },
       { immediate: true }
@@ -664,6 +688,51 @@ export default {
       });
     }
 
+    function applyImportedDiagram(importedDiagram, rawXml, warningsList) {
+      diagram.value = JSON.parse(JSON.stringify(importedDiagram));
+      diagramBuilt.value = true;
+      history.value = [JSON.parse(JSON.stringify(diagram.value))];
+      historyIndex.value = 0;
+      selectedLaneIndex.value = 0;
+      lanesVersion.value++;
+      emit('bpmn-xml-updated', rawXml);
+      if (warningsList && warningsList.length > 0) {
+        emit('notify', { text: `Импорт: ${warningsList.join(' ')}`, color: 'warning' });
+      }
+    }
+
+    function openBpmnImport() {
+      bpmnFileInput.value?.click();
+    }
+
+    async function onBpmnFileSelected(event) {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      if (!file) return;
+      const lower = file.name.toLowerCase();
+      if (!lower.endsWith('.bpmn') && !lower.endsWith('.bpm') && !lower.endsWith('.xml')) {
+        emit('notify', { text: 'Выберите файл с расширением .bpmn, .bpm или .xml', color: 'error' });
+        return;
+      }
+      let text;
+      try {
+        text = await file.text();
+      } catch (e) {
+        emit('notify', { text: 'Не удалось прочитать файл', color: 'error' });
+        return;
+      }
+      const result = await importBpmnXmlToDiagram(text);
+      if (result.error) {
+        emit('notify', { text: result.error, color: 'error' });
+        return;
+      }
+      applyImportedDiagram(result.diagram, text, result.warnings);
+    }
+
+    defineExpose({
+      applyImportedDiagram,
+    });
+
     function buildDiagram() {
       if (!validation.value.isValid) {
         return;
@@ -859,6 +928,9 @@ export default {
       loadTemplate,
       buildDiagram,
       saveDiagramToList,
+      bpmnFileInput,
+      openBpmnImport,
+      onBpmnFileSelected,
       diagramBuilt,
       addElementAfter: addElementAfterLegacy,
       handleDragStart: handleDragStartLegacy,
@@ -1171,6 +1243,18 @@ export default {
   background: #f5f5f5;
   border-radius: 6px;
   border: 1px dashed #e0e0e0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>
 
