@@ -275,6 +275,17 @@
         Построить диаграмму
       </v-btn>
       <v-btn
+        @click="saveDiagramToList"
+        :disabled="!hasElements"
+        color="success"
+        variant="elevated"
+        class="build-btn"
+        size="large"
+      >
+        <v-icon icon="mdi-content-save" class="mr-2" />
+        Сохранить диаграмму
+      </v-btn>
+      <v-btn
         @click="exportBpmn"
         :disabled="!validation.isValid || !hasElements || !diagramBuilt"
         color="secondary"
@@ -331,7 +342,13 @@ export default {
   components: {
     ElementEditor,
   },
-  emits: ['bpmn-xml-updated'],
+  props: {
+    initialSaveState: {
+      type: Object,
+      default: null,
+    },
+  },
+  emits: ['bpmn-xml-updated', 'save-diagram'],
   setup(props, { emit }) {
     // New diagram structure with pools/lanes
     const diagram = ref(createEmptyDiagram());
@@ -419,7 +436,45 @@ export default {
       { deep: true }
     );
 
+    const initialRev = computed(() => props.initialSaveState?._rev ?? null);
+
+    function applyInitialSaveState(state) {
+      if (!state?.diagram) return;
+      diagram.value = JSON.parse(JSON.stringify(state.diagram));
+      diagramBuilt.value = !!state.diagramBuilt;
+      history.value = [JSON.parse(JSON.stringify(diagram.value))];
+      historyIndex.value = 0;
+      selectedLaneIndex.value = 0;
+      lanesVersion.value++;
+
+      let xml = state.bpmnXml || '';
+      if (!xml && diagramBuilt.value) {
+        try {
+          xml = generateBpmnXml(diagram.value);
+        } catch (e) {
+          console.warn('applyInitialSaveState: regenerate XML failed', e);
+        }
+      }
+      if (diagramBuilt.value && xml) {
+        emit('bpmn-xml-updated', xml);
+      } else {
+        emit('bpmn-xml-updated', '');
+      }
+    }
+
+    watch(
+      initialRev,
+      (rev) => {
+        if (!rev || !props.initialSaveState?.diagram) return;
+        applyInitialSaveState(props.initialSaveState);
+      },
+      { immediate: true }
+    );
+
     onMounted(() => {
+      if (props.initialSaveState?._rev) {
+        return;
+      }
       if (diagram.value.pools.length === 0) {
         diagram.value = createEmptyDiagram();
         saveToHistory();
@@ -596,6 +651,17 @@ export default {
       diagramBuilt.value = false;
       saveToHistory();
       emit('bpmn-xml-updated', '');
+    }
+
+    function saveDiagramToList() {
+      if (!hasElements.value) return;
+      const pool = currentPool.value;
+      const title = (pool?.name && String(pool.name).trim()) || 'Диаграмма';
+      emit('save-diagram', {
+        diagram: JSON.parse(JSON.stringify(diagram.value)),
+        diagramBuilt: diagramBuilt.value,
+        title,
+      });
     }
 
     function buildDiagram() {
@@ -792,6 +858,7 @@ export default {
       exportSvg,
       loadTemplate,
       buildDiagram,
+      saveDiagramToList,
       diagramBuilt,
       addElementAfter: addElementAfterLegacy,
       handleDragStart: handleDragStartLegacy,

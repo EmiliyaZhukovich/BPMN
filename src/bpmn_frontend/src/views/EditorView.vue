@@ -1,33 +1,48 @@
 <template>
-  <div class="home-container">
-    <div
-      class="constructor-container"
-      :style="{ width: `${constructorWidth}px` }"
-    >
-      <ConstructorPanel
-        @bpmn-xml-updated="handleBpmnXml"
-        @export-png="exportPng"
-        @export-svg="exportSvg"
+  <div class="editor-page">
+    <header class="editor-toolbar">
+      <v-btn
+        variant="text"
+        prepend-icon="mdi-arrow-left"
+        @click="goHome"
+      >
+        На главную
+      </v-btn>
+      <span v-if="savedMetaLine" class="toolbar-meta">{{ savedMetaLine }}</span>
+    </header>
+    <div class="home-container">
+      <div
+        class="constructor-container"
+        :style="{ width: `${constructorWidth}px` }"
+      >
+        <ConstructorPanel
+          :key="panelKey"
+          :initial-save-state="initialSaveState"
+          @bpmn-xml-updated="handleBpmnXml"
+          @export-png="exportPng"
+          @export-svg="exportSvg"
+          @save-diagram="handleSaveDiagram"
+        />
+      </div>
+      <div
+        class="split-gutter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Изменить ширину панели конструктора"
+        title="Потяните, чтобы изменить ширину панели"
+        tabindex="0"
+        @mousedown.prevent="onResizeStart"
       />
+      <div
+        id="canvas"
+        class="canvas-container"
+        @dragover.prevent
+        @drop="handleDrop"
+      ></div>
+      <v-snackbar v-model="snackbar.show" :color="snackbar.color" :timeout="3000">
+        {{ snackbar.text }}
+      </v-snackbar>
     </div>
-    <div
-      class="split-gutter"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Изменить ширину панели конструктора"
-      title="Потяните, чтобы изменить ширину панели"
-      tabindex="0"
-      @mousedown.prevent="onResizeStart"
-    />
-    <div
-      id="canvas"
-      class="canvas-container"
-      @dragover.prevent
-      @drop="handleDrop"
-    ></div>
-    <v-snackbar v-model="snackbar.show" :color="snackbar.color" :timeout="3000">
-      {{ snackbar.text }}
-    </v-snackbar>
   </div>
 </template>
 
@@ -35,12 +50,13 @@
 import BpmnModeler from 'bpmn-js/lib/Modeler';
 import ConstructorPanel from '../components/ConstructorPanel.vue';
 import { bpmnLayoutServerUrl } from '../config';
+import { getSavedDiagram, upsertSavedDiagram } from '../utils/diagramStorage';
 import 'bpmn-js/dist/assets/diagram-js.css';
 import 'bpmn-js/dist/assets/bpmn-js.css';
 import 'bpmn-js/dist/assets/bpmn-font/css/bpmn-embedded.css';
 
 export default {
-  name: 'HomeView',
+  name: 'EditorView',
   components: {
     ConstructorPanel,
   },
@@ -58,14 +74,48 @@ export default {
       bpmnViewer: null,
       constructorWidth: initialW,
       _resizeCleanup: null,
-      /** Счётчик вызовов importXML: отбрасываем устаревшие await после смены XML (гонка «очистка» vs «построить»). */
       _bpmnImportSeq: 0,
+      panelKey: 0,
+      /** Сбрасывает подпись в шапке после первого сохранения новой диаграммы */
+      metaTick: 0,
       snackbar: {
         show: false,
         text: '',
         color: 'success',
       },
     };
+  },
+  computed: {
+    diagramRouteId() {
+      return this.$route.params.id || null;
+    },
+    initialSaveState() {
+      const id = this.diagramRouteId;
+      if (!id) return null;
+      const s = getSavedDiagram(id);
+      if (!s?.diagram) return null;
+      return {
+        _rev: s.id,
+        diagram: s.diagram,
+        diagramBuilt: !!s.diagramBuilt,
+        bpmnXml: s.bpmnXml || '',
+      };
+    },
+    savedMetaLine() {
+      this.metaTick;
+      const id = this.diagramRouteId;
+      if (!id) return '';
+      const s = getSavedDiagram(id);
+      if (!s?.name) return '';
+      return s.name;
+    },
+  },
+  watch: {
+    '$route.params.id'(next, prev) {
+      if (prev != null && next != null && next !== prev) {
+        this.panelKey += 1;
+      }
+    },
   },
   mounted() {
     this.clampConstructorWidth();
@@ -77,21 +127,9 @@ export default {
       container: '#canvas',
     });
 
-    // Скрываем логотип BPMN.io после инициализации
     this.$nextTick(() => {
       this.hideBpmnLogo();
     });
-
-    // this.bpmnViewer
-    //   .importXML(initialDiagram)
-    //   .then((result) => {
-    //     const { warnings } = result;
-    //     console.log("BPMN diagram imported successfully", warnings);
-    //     this.bpmnViewer.get("canvas").zoom("fit-viewport");
-    //   })
-    //   .catch((err) => {
-    //     console.error("Failed to import BPMN diagram:", err);
-    //   });
   },
   beforeUnmount() {
     if (this.handleWindowResize) {
@@ -103,6 +141,29 @@ export default {
     this.stopResizeListeners();
   },
   methods: {
+    goHome() {
+      this.$router.push({ name: 'home' });
+    },
+    handleSaveDiagram(payload) {
+      const id = this.diagramRouteId;
+      if (!id) {
+        this.showSnackbar('Не удалось определить диаграмму', 'error');
+        return;
+      }
+      try {
+        upsertSavedDiagram({
+          id,
+          name: payload.title,
+          diagram: payload.diagram,
+          bpmnXml: this.bpmnXml || '',
+          diagramBuilt: payload.diagramBuilt,
+        });
+        this.metaTick += 1;
+        this.showSnackbar('Диаграмма сохранена', 'success');
+      } catch {
+        this.showSnackbar('Не удалось сохранить (лимит хранилища?)', 'error');
+      }
+    },
     clampConstructorWidth() {
       const min = 280;
       const max = Math.min(Math.floor(window.innerWidth * 0.88), 960);
@@ -159,7 +220,6 @@ export default {
       this._resizeCleanup = onUp;
     },
     hideBpmnLogo() {
-      // Скрываем логотип BPMN.io различными способами
       const selectors = [
         '.bjs-powered-by',
         '.bjs-powered-by-bpmn',
@@ -175,7 +235,6 @@ export default {
         });
       });
 
-      // Также ищем по тексту
       const allLinks = document.querySelectorAll('a');
       allLinks.forEach((link) => {
         if (link.textContent && link.textContent.includes('bpmn.io')) {
@@ -189,7 +248,7 @@ export default {
       this.snackbar.show = true;
     },
     async handleDrop(event) {
-      event.preventDefault(); // Prevent the browser from default file handling
+      event.preventDefault();
       if (event.dataTransfer.items) {
         for (let i = 0; i < event.dataTransfer.items.length; i++) {
           if (event.dataTransfer.items[i].kind === 'file') {
@@ -204,7 +263,6 @@ export default {
                   this.bpmnViewer.get('canvas').zoom('fit-viewport');
                   console.log('BPMN diagram loaded successfully');
                   this.bpmnXml = xmlContent;
-                  await this.createBpmnJson();
                 } catch (err) {
                   console.error('Failed to import BPMN diagram:', err);
                 }
@@ -274,10 +332,8 @@ export default {
       const importSeq = ++this._bpmnImportSeq;
 
       if (!bpmnXmlValue || bpmnXmlValue === '') {
-        // Clear the diagram but keep viewer initialized
         if (this.bpmnViewer) {
           try {
-            // Import empty diagram to clear
             await this.bpmnViewer.importXML('<?xml version="1.0" encoding="UTF-8"?><definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="definitions_1"><process id="Process_1" isExecutable="false"></process></definitions>');
           } catch (err) {
             console.error('Failed to clear diagram:', err);
@@ -296,8 +352,6 @@ export default {
       try {
         console.log('Processing BPMN XML:', bpmnXmlValue.substring(0, 200));
 
-        // Внешний layout перезаписывает BPMNDI и ломает ортогональные стрелки у пулов/дорожек — не вызываем его,
-        // если уже есть полная разметка от генератора (BPMNEdge в collaboration).
         let xmlToImport = bpmnXmlValue;
         const hasCollaboration = /<collaboration[\s>]/i.test(bpmnXmlValue) || /<participant[\s>]/i.test(bpmnXmlValue);
         const hasEmbeddedBpmnDiEdges = /<bpmndi:BPMNEdge[\s>]/i.test(bpmnXmlValue);
@@ -321,19 +375,16 @@ export default {
 
         this.bpmnXml = xmlToImport;
 
-        // Import the diagram
         const { warnings } = await this.bpmnViewer.importXML(xmlToImport);
         if (importSeq !== this._bpmnImportSeq) return;
         console.log('BPMN diagram imported successfully', warnings);
         this.bpmnViewer.get('canvas').zoom('fit-viewport');
-        // Скрываем логотип после импорта
         this.hideBpmnLogo();
         this.showSnackbar('Диаграмма построена успешно', 'success');
       } catch (error) {
         console.error('Error handling BPMN XML:', error);
         this.showSnackbar(`Ошибка при построении диаграммы: ${error.message}`, 'error');
 
-        // Try to import without layout as fallback
         try {
           await this.bpmnViewer.importXML(bpmnXmlValue);
           if (importSeq !== this._bpmnImportSeq) return;
@@ -374,10 +425,37 @@ export default {
 </script>
 
 <style scoped>
+.editor-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.editor-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  z-index: 3;
+}
+
+.toolbar-meta {
+  font-size: 0.9rem;
+  color: #616161;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .home-container {
   display: flex;
   flex-direction: row;
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   align-items: stretch;
 }
@@ -386,7 +464,7 @@ export default {
   flex: 0 0 auto;
   min-width: 280px;
   max-width: min(88vw, 960px);
-  height: 100vh;
+  height: 100%;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -417,7 +495,7 @@ export default {
 .canvas-container {
   flex: 1;
   min-width: 0;
-  height: 100vh;
+  height: 100%;
   border-left: none;
   background: #fafafa;
 }
@@ -426,18 +504,15 @@ export default {
   width: 100%;
   height: 100%;
 }
-
 </style>
 
 <style>
-/* Скрываем логотип BPMN.io */
 .bjs-powered-by,
 .bjs-powered-by-bpmn,
 [class*="powered-by"] {
   display: none !important;
 }
 
-/* Альтернативные селекторы для логотипа */
 a[href*="bpmn.io"],
 a[href*="bpmn-io"] {
   display: none !important;
