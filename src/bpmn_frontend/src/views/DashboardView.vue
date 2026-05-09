@@ -6,7 +6,6 @@
           <v-icon icon="mdi-chart-timeline-variant" color="primary" size="36" class="mr-3" />
           <div>
             <h1 class="title">BPMN Assistant</h1>
-            <p class="subtitle">Сохранённые диаграммы хранятся в браузере на этом устройстве</p>
           </div>
         </div>
         <v-btn color="primary" size="large" prepend-icon="mdi-plus" @click="createDiagram">
