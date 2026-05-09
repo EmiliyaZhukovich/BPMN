@@ -119,10 +119,13 @@ function mapFlowElementType($type) {
   return TYPE_MAP[$type] || null;
 }
 
-function extractLinkEventDefinition(node) {
+function extractEventDefinition(node) {
   const eds = node.eventDefinitions || [];
   for (const ed of eds) {
-    if (ed && String(ed.$type || '').includes('Link')) return 'link';
+    if (!ed) continue;
+    const t = String(ed.$type || '');
+    if (t.includes('Link')) return 'link';
+    if (t.includes('Message')) return 'message';
   }
   return null;
 }
@@ -137,9 +140,14 @@ function makeModelFlowNode(fe, warnings) {
   const el = createElement(localType, label);
   el.id = fe.id;
 
-  const linkDef = extractLinkEventDefinition(fe);
-  if (linkDef && (localType === 'intermediateCatchEvent' || localType === 'intermediateThrowEvent')) {
-    el.eventDefinition = linkDef;
+  const evDef = extractEventDefinition(fe);
+  if (
+    evDef &&
+    (localType === 'startEvent' ||
+      localType === 'intermediateCatchEvent' ||
+      localType === 'intermediateThrowEvent')
+  ) {
+    el.eventDefinition = evDef;
   }
 
   if (ARTIFACT_TYPES.has(localType) && fe.text != null) {
@@ -255,22 +263,53 @@ function shortestPathLen(from, to, outMap, maxHops) {
 
 /**
  * Точка слияния веток после шлюза: узел, достижимый со всех исходов шлюза.
+ * Учитывает слияние в обычную активность (одна ветка заходит в узел напрямую: длина 0).
  */
-function findJoinGateway(splitId, branchTargets, flowNodeById, outMap) {
+function findJoinGateway(splitId, branchTargets, flowNodeById, outMap, maxHops = 4000) {
   if (branchTargets.length < 2) return null;
   const candidates = [];
   for (const id of flowNodeById.keys()) {
     if (id === splitId) continue;
-    if (branchTargets.includes(id)) continue;
-    const lens = branchTargets.map((t) => shortestPathLen(t, id, outMap, 800));
-    if (lens.every((l) => l != null && l > 0)) {
-      const score = Math.max(...lens);
-      candidates.push({ id, score });
-    }
+    const lens = branchTargets.map((t) => {
+      if (t === id) return 0;
+      return shortestPathLen(t, id, outMap, maxHops);
+    });
+    if (lens.some((l) => l == null)) continue;
+    const allReach = lens.every((l, i) => {
+      const t = branchTargets[i];
+      if (t === id) return l === 0;
+      return l > 0;
+    });
+    if (!allReach) continue;
+    const score = Math.max(...lens);
+    candidates.push({ id, score });
   }
   if (!candidates.length) return null;
   candidates.sort((a, b) => a.score - b.score || a.id.localeCompare(b.id));
   return candidates[0].id;
+}
+
+/**
+ * Точка слияния для неявного разветвления с активности (несколько sequenceFlow без шлюза).
+ * Если граф большой — ищем join; во вложенном сегменте допускаем слияние на exitBoundary.
+ */
+function resolveImplicitSplitJoin(splitId, branchTargets, exitBoundary, flowNodeById, outMap) {
+  const j = findJoinGateway(splitId, branchTargets, flowNodeById, outMap);
+  if (j) return j;
+  if (exitBoundary) {
+    const lens = branchTargets.map((t) => {
+      if (t === exitBoundary) return 0;
+      return shortestPathLen(t, exitBoundary, outMap, 4000);
+    });
+    if (lens.some((l) => l == null)) return null;
+    const allReach = lens.every((l, i) => {
+      const t = branchTargets[i];
+      if (t === exitBoundary) return l === 0;
+      return l > 0;
+    });
+    if (allReach) return exitBoundary;
+  }
+  return null;
 }
 
 function isSplitGateway(flowNodeById, outMap, id) {
@@ -409,7 +448,8 @@ export async function importBpmnXmlToDiagram(xmlStr) {
           const made = makeGatewayShell(fe, outs, joinId, flowNodeById, outMap, inDegree, warnings, parseSegment);
           if (!made.ok) return made;
           seq.push(made.gateway);
-          cur = getSingleSuccessor(outMap, joinId);
+          // Продолжать с узла слияния; если это активность (не шлюз), successor нельзя брать сразу — иначе узел теряется из основной цепочки.
+          cur = joinId;
           continue;
         }
 
@@ -434,10 +474,60 @@ export async function importBpmnXmlToDiagram(xmlStr) {
         const outs = getOuts(outMap, cur);
         if (outs.length === 0) break;
         if (outs.length > 1) {
-          return {
-            ok: false,
-            error: `Узел «${fe.name || fe.id}» имеет несколько исходящих потоков — ожидался шлюз`,
-          };
+          // Несколько исходов с задачи/события без шлюза — допустимо в BPMN (Camunda/bpmn.io); моделируем как XOR.
+          const branchTargets = outs.map((o) => o.target);
+          const joinId = resolveImplicitSplitJoin(cur, branchTargets, exitBoundary, flowNodeById, outMap);
+          const labels = outs.length === 2 ? ['Да', 'Нет'] : outs.map((_, i) => `Ветвь ${i + 1}`);
+          const igw = createElement('exclusiveGateway', '');
+          igw.id = `implicit_xor_${fe.id}`;
+
+          if (joinId != null) {
+            const branches = [];
+            for (let idx = 0; idx < outs.length; idx++) {
+              const o = outs[idx];
+              let cond = flowConditionLabel(o.flow);
+              if (!cond) cond = labels[idx] || `Ветвь ${idx + 1}`;
+              const sub = parseSegment(o.target, joinId);
+              if (!sub.ok) return sub;
+              const path = sub.seq;
+              if (!path.length) {
+                branches.push({ condition: cond, path: [], next: joinId, isDefault: false });
+              } else {
+                branches.push({ condition: cond, path, isDefault: false });
+              }
+            }
+            igw.branches = branches;
+            seq.push(igw);
+            warnings.push(
+              `У узла «${fe.name || fe.id}» несколько исходящих потоков без шлюза — при импорте добавлен шлюз XOR (${igw.id}).`,
+            );
+            cur = joinId;
+            continue;
+          }
+
+          if (exitBoundary != null) {
+            return {
+              ok: false,
+              error:
+                `Узел «${fe.name || fe.id}» имеет несколько исходящих потоков без шлюза; не удалось согласовать ветки со слиянием внешнего фрагмента. Добавьте явный XOR в BPMN-редакторе.`,
+            };
+          }
+
+          const terminalBranches = [];
+          for (let idx = 0; idx < outs.length; idx++) {
+            const o = outs[idx];
+            let cond = flowConditionLabel(o.flow);
+            if (!cond) cond = labels[idx] || `Ветвь ${idx + 1}`;
+            const sub = parseSegment(o.target, null);
+            if (!sub.ok) return sub;
+            terminalBranches.push({ condition: cond, path: sub.seq, isDefault: false });
+          }
+          igw.branches = terminalBranches;
+          seq.push(igw);
+          warnings.push(
+            `У узла «${fe.name || fe.id}» несколько исходящих без шлюза — импортирован как XOR с независимыми ветками (${igw.id}).`,
+          );
+          return { ok: true, seq };
         }
         cur = outs[0].target;
       }

@@ -3,56 +3,14 @@
  * Pre-built templates for common BPMN patterns
  */
 
+import { SIMPLE_CONDITION_DIAGRAM } from './templateSimpleCondition.js';
+
 export const templates = {
   simpleCondition: {
     name: 'Простое условие',
-    description: 'Базовый поток с условием если/иначе',
-    process: [
-      {
-        id: 'start_1',
-        type: 'startEvent',
-        label: 'Пришло заявление',
-      },
-      {
-        id: 'task_1',
-        type: 'task',
-        label: 'Проверить правильность данных',
-      },
-      {
-        id: 'gateway_1',
-        type: 'exclusiveGateway',
-        label: '',
-        branches: [
-          {
-            condition: 'Данные корректны',
-            path: [
-              {
-                id: 'task_2',
-                type: 'task',
-                label: 'Зарегистрировать заявку',
-              },
-            ],
-            isDefault: false,
-          },
-          {
-            condition: 'Данные некорректны',
-            path: [
-              {
-                id: 'task_3',
-                type: 'task',
-                label: 'Запрос на проверку информации',
-              },
-            ],
-            isDefault: false,
-          },
-        ],
-      },
-      {
-        id: 'end_1',
-        type: 'endEvent',
-        label: 'Заявка зарегистрирована / Отклонена',
-      },
-    ],
+    description:
+      '',
+    diagram: SIMPLE_CONDITION_DIAGRAM,
   },
 
   multipleConditions: {
@@ -119,77 +77,99 @@ export const templates = {
 
   parallelProcesses: {
     name: 'Параллельные процессы',
-    description: 'Несколько процессов, выполняющихся параллельно',
-    process: [
-      {
-        id: 'start_1',
-        type: 'startEvent',
-        label: 'Запуск проекта',
-      },
-      {
-        id: 'gateway_1',
-        type: 'parallelGateway',
-        label: '',
-        branches: [
-          {
-            condition: '',
-            path: [
-              {
-                id: 'task_1',
-                type: 'task',
-                label: 'Подготовка технической спецификации',
-              },
-            ],
-            isDefault: false,
-          },
-          {
-            condition: '',
-            path: [
-              {
-                id: 'task_2',
-                type: 'task',
-                label: 'Форма бюджета',
-              },
-            ],
-            isDefault: false,
-          },
-        ],
-      },
-      {
-        id: 'gateway_2',
-        type: 'exclusiveGateway',
-        label: '',
-        branches: [
-          {
-            condition: 'Технические характеристики готовы, и бюджет утвержден.',
-            path: [
-              {
-                id: 'task_3',
-                type: 'task',
-                label: 'Начало реализации',
-              },
-            ],
-            isDefault: false,
-          },
-          {
-            condition: 'At least one not done',
-            path: [
-              {
-                id: 'task_4',
-                type: 'task',
-                label: 'Переработка',
-              },
-            ],
-            isDefault: false,
-          },
-        ],
-      },
-      {
-        id: 'end_1',
-        type: 'endEvent',
-        label: 'Проект запущен',
-      },
-    ],
+    description: 'Подготовка нового сотрудника: параллельно HR и IT',
+    /** Полная диаграмма (пул, дорожки HR/IT, объект данных «Договор») — эквивалент эталонного BPMN XML. */
+    diagram: {
+      pools: [
+        {
+          id: 'pool_1778279456098_0.4668799290186003',
+          name: 'Подготовка нового сотрудника к первому рабочему дню',
+          lanes: [
+            {
+              id: 'lane_1778279456098_0.43330816583362475',
+              name: 'HR-специалист',
+              elements: [
+                {
+                  id: 'element_1778279459921_0.12448634235333866',
+                  type: 'startEvent',
+                  label: 'Новый сотрудник принят на работу',
+                },
+                {
+                  id: 'element_1778279465189_0.9986977176473057',
+                  type: 'task',
+                  label: 'Внести сотрудника в систему учета персонала',
+                },
+                {
+                  id: 'element_1778279470837_0.9565168521680284',
+                  type: 'parallelGateway',
+                  label: '',
+                  branches: [
+                    {
+                      condition: '',
+                      path: [
+                        {
+                          id: 'element_1778279475711_0.217395933119644',
+                          type: 'task',
+                          label: 'Подготовить документы и договор',
+                        },
+                        {
+                          id: 'DataObjectReference_1paa0tb',
+                          type: 'dataObjectReference',
+                          label: 'Договор',
+                        },
+                      ],
+                      isDefault: false,
+                    },
+                    {
+                      condition: '',
+                      path: [
+                        {
+                          id: 'element_1778279482999_0.9205581726880107',
+                          type: 'task',
+                          label: 'Настроить компьютер',
+                        },
+                        {
+                          id: 'element_1778279485789_0.7000639406552076',
+                          type: 'task',
+                          label: 'Создать доступы к системам',
+                        },
+                      ],
+                      isDefault: false,
+                      laneId: 'lane_1778279457718_0.9609733565869626',
+                    },
+                  ],
+                },
+                {
+                  id: 'element_1778279491551_0.9784666201797482',
+                  type: 'task',
+                  label: 'Уведомить сотрудника, что все готово',
+                },
+                {
+                  id: 'element_1778279495265_0.5692476968152547',
+                  type: 'endEvent',
+                  label: 'Подготовка завершена',
+                },
+              ],
+            },
+            {
+              id: 'lane_1778279457718_0.9609733565869626',
+              name: 'IT-специалист',
+              elements: [],
+            },
+          ],
+        },
+      ],
+      associations: [
+        {
+          id: 'assoc_template_onboarding_contract',
+          sourceRef: 'element_1778279475711_0.217395933119644',
+          targetRef: 'DataObjectReference_1paa0tb',
+          label: '',
+          direction: 'none',
+        },
+      ],
+      artifacts: [],
+    },
   },
 
   loop: {
@@ -251,11 +231,17 @@ export const templates = {
 };
 
 export function getTemplate(name) {
-  // Check if it's a diagram template (with pools) or process template (legacy)
-  if (templates[name] && templates[name].diagram) {
-    return JSON.parse(JSON.stringify(templates[name].diagram));
+  const t = templates[name];
+  if (!t) return null;
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  const pools = t.diagram?.pools;
+  if (Array.isArray(pools) && pools.length > 0) {
+    return clone(t.diagram);
   }
-  return templates[name] ? JSON.parse(JSON.stringify(templates[name].process)) : null;
+  if (Array.isArray(t.process)) {
+    return clone(t.process);
+  }
+  return null;
 }
 
 export function getAllTemplates() {

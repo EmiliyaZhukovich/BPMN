@@ -29,28 +29,103 @@ autonumber
 actor "Системный\nаналитик" as User
 
 box "Клиент (Vue.js)" #F4F7FB
+  participant "dash:СтраницаДомашняя" as dash
   participant "panel:ПанельКонструктора" as panel
   participant "home:ГлавныйЭкран" as home
-  participant "modeler:МодельерBpmn\n(bpmn-js)" as modeler <<внешняя библиотека>>
+  participant "modeler:МодельерBpmn\n(bpmn-js)" as modeler <<внешняя>>
 end box
 
 box "Сервер (FastAPI)" #F4F7FB
   participant "api:ПриложениеApi" as api <<контроллер>>
-  participant "layout:СервисРазметкиBpmn" as layout <<контроллер>>
+  participant "layout:СервисРазметкиBpmn" as layout
+  participant "saved:СервисСохранённыхДиаграмм" as saved
 end box
 
 box "База данных (PostgreSQL)" #F4F7FB
   database "PostgreSQL" as db
 end box
 
-User -> panel: Настроить процесс,\nнажать «Построить диаграмму»
-activate panel
+== Главная страница: работа с сохранёнными моделями ==
+
+User -> dash: Открыть приложение\n(маршрут «/»)
+activate dash
+dash -> api: GET /diagrams
+activate api
+api -> saved: list_for_user(user_id)
+activate saved
+saved -> db: SELECT карточки\n(id, name, updated_at, …)\nFROM **сохранённые_модели**\nWHERE user_id
+activate db
+db --> saved: метаданные
+deactivate db
+saved --> api: список записей
+deactivate saved
+api --> dash: JSON списка
+deactivate api
+dash --> User: отображение карточек /\nпустое состояние
+
+opt Удаление с главной страницы
+  User -> dash: «Удалить», подтвердить
+  dash -> api: **DELETE** /diagrams/{id}
+  activate api
+  api -> saved: delete_for_user(user_id, id)
+  activate saved
+  saved -> db: DELETE\nFROM **сохранённые_модели**\nWHERE id AND user_id
+  activate db
+  db --> saved: строки удалены\n(или 0)
+  deactivate db
+  saved --> api: операция завершена
+  deactivate saved
+  api --> dash: подтверждение
+  deactivate api
+  dash -> api: **GET** /diagrams\n(обновить список)
+  activate api
+  api -> saved: list_for_user(user_id)
+  activate saved
+  saved -> db: SELECT карточки\n(как при первом GET)
+  activate db
+  db --> saved: актуальный список
+  deactivate db
+  saved --> api: список записей
+  deactivate saved
+  api --> dash: JSON списка
+  deactivate api
+  dash --> User: список обновлён
+end
+
+alt Новая диаграмма
+  User -> dash: «Создать диаграмму»
+  dash -> dash: новый uuid\n(идентификатор сессии)
+  dash -> panel: переход **/editor/:id**\n(пустой конструктор и холст)
+  activate panel
+  deactivate dash
+else Открыть сохранённую
+  User -> dash: «Открыть»\n(карточка)
+  dash -> panel: переход **/editor/:id**
+  activate panel
+  deactivate dash
+  panel -> api: **GET** /diagrams/{id}
+  activate api
+  api -> saved: get_for_user(user_id, id)
+  activate saved
+  saved -> db: SELECT *\nFROM **сохранённые_модели**\nWHERE id AND user_id
+  activate db
+  db --> saved: поля: name, diagram,\nbpmnXml, diagramBuilt, …
+  deactivate db
+  saved --> api: **ОтветСохранённойМодели**
+  deactivate saved
+  api --> panel: JSON\n(initialSaveState)
+  deactivate api
+end
+
+== Редактор: построение диаграммы ==
+
+User -> panel: Настроить процесс →\n«Построить диаграмму»
 
 alt Модель не прошла проверку\n(валидация в конструкторе)
-  panel --> User: Построение недоступно\n(кнопка отключена)
+  panel --> User: построение недоступно\n(кнопка отключена)
   deactivate panel
 else Модель допустима для построения
-  panel -> panel: сформироватьXml(модель диаграммы)\n(утилита генерации BPMN XML)
+  panel -> panel: сформироватьXml(модель)\n(утилита генерации BPMN XML)
   alt Ошибка генерации XML
     panel --> User: сообщение об ошибке\n(структура процесса)
     deactivate panel
@@ -66,23 +141,29 @@ else Модель допустима для построения
       deactivate modeler
       deactivate home
     else Непустой BPMN XML
-      home -> api: **POST** /process-bpmn\nJSON: { bpmnXml }
+      home -> api: **POST** /process-bpmn\nJSON: { bpmnXml, … }
       activate api
       api -> layout: обработатьBpmn(xml)
       activate layout
       layout -> layout: авторазметка\n(bpmn-auto-layout)
       layout --> api: BPMN XML с разметкой
       deactivate layout
-      api -> db: SQL (**пользователи**, **сохранённые_модели**)
+
+      api -> saved: upsert_for_user\n(актуализация черновика / разметки)
+      activate saved
+      saved -> db: UPSERT черновика\n(**сохранённые_модели**):\nразмеченный bpmnXml,\nфлаги состояния
       activate db
-      db --> api: результат
+      db --> saved: строка в БД\n(вставлена или обновлена)
       deactivate db
-      api --> home: JSON: { layoutedXml }
+      saved --> api: **ОтветСохранённойМодели**
+      deactivate saved
+
+      api --> home: JSON:\n{ layoutedXml }
       deactivate api
 
       opt Сервер недоступен,\nошибка или пустой ответ
         note right of home
-          Клиент оставляет исходный XMLи пытается показать диаграмму\nбез новой разметки.
+          Клиент оставляет исходный XML и пытается показать диаграмму\nбез новой разметки.
         end note
       end
 
@@ -92,14 +173,32 @@ else Модель допустима для построения
       deactivate modeler
 
       alt Критическая ошибка импорта
-        home --> User: уведомление об ошибке\n(снекбар)
+        home --> User: уведомление об ошибке
       else Успешное отображение
-        home --> User: уведомление об успехе\n(снекбар)
+        home --> User: уведомление об успехе
       end
       deactivate home
     end
   end
 end
 
+opt Сохранение модели\n(явное сохранение из конструктора)
+  User -> panel: «Сохранить», название,\nмодель и текущий BPMN XML
+  activate panel
+  panel -> api: **PUT** /diagrams/{id}\nJSON: { name, diagram, bpmnXml, diagramBuilt }
+  activate api
+  api -> saved: upsert_for_user(user_id, payload)
+  activate saved
+  saved -> db: UPSERT по id\n(**сохранённые_модели**):\nname, diagram, bpmnXml,\ndiagramBuilt
+  activate db
+  db --> saved: запись сохранена
+  deactivate db
+  saved --> api: **ОтветСохранённойМодели**
+  deactivate saved
+  api --> panel: подтверждение
+  deactivate api
+  panel --> User: уведомление
+  deactivate panel
+end
 
 @enduml

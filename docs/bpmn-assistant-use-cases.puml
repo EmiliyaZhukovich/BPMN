@@ -1,63 +1,83 @@
 @startuml bpmn-assistant-use-cases
 title BPMN Assistant — диаграмма вариантов использования
 
+' Ограничение ширины ≈ колонка A4 при просмотре/печати; вертикальная компоновка
+scale max 1180 width
+scale 1.72
+
 skinparam shadowing false
 skinparam handwritten false
 skinparam actorStyle awesome
 skinparam linetype ortho
-skinparam nodesep 70
-skinparam ranksep 56
+skinparam nodesep 62
+skinparam ranksep 82
+skinparam Padding 16
+skinparam packagePadding 22
+skinparam ArrowMessageSeparation 22
 skinparam packageStyle rectangle
+skinparam defaultFontSize 18
+skinparam titleFontSize 26
+skinparam titleFontStyle bold
+
 skinparam package {
   BackgroundColor #F4F7FB
   BorderColor #5C7CA6
   FontStyle bold
   FontColor #2C3E50
+  FontSize 19
 }
 skinparam usecase {
   BackgroundColor #E8EEF7
   BorderColor #3D5A80
   FontColor #1A2B3C
   RoundCorner 18
-  FontSize 11
+  FontSize 18
 }
 skinparam actor {
   BackgroundColor #FFF6E8
   BorderColor #C67C2A
   FontColor #3D2914
+  FontSize 18
 }
 skinparam rectangle {
   BackgroundColor #FAFBFD
   BorderColor #8FA3B8
   RoundCorner 22
+  FontSize 17
 }
 skinparam arrow {
   Color #4A5568
-  FontSize 10
+  FontSize 16
+  Thickness 1.45
 }
 skinparam note {
   BackgroundColor #FFFDF5
   BorderColor #D4C48A
-  FontSize 10
+  FontSize 16
 }
 
-left to right direction
+top to bottom direction
 
 actor "Системный аналитик" as User
 
 rectangle "Система «BPMN Assistant»" as SYS {
 
-  package "Входы в систему" as P_IN {
-    usecase "Загрузить шаблон\nпроцесса" as UC_Template
-    usecase "Импортировать BPMN\nиз файла (.bpmn)" as UC_Import
+  package "Домашняя страница и сохранённые диаграммы" as P_HOME {
+    usecase "Просмотреть список сохранённых\nдиаграмм (главная страница)" as UC_DashList
+    usecase "Создать новую диаграмму" as UC_NewDiag
+    usecase "Открыть сохранённую диаграмму\nв редакторе" as UC_OpenDiag
+    usecase "Удалить диаграмму\nиз сохранённых" as UC_DelDiag
   }
 
-  package "Основной рабочий поток" as P_MAIN {
+  package "Редактор: основной поток и панель конструктора" as P_MAIN {
+    usecase "Загрузить шаблон процесса\n(панель конструктора)" as UC_Template
+    usecase "Импортировать BPMN\nиз файла (.bpmn), панель конструктора" as UC_Import
     usecase "Настроить пул процесса\nи дорожки (lanes)" as UC_PoolLanes
     usecase "Смоделировать бизнес-процесс\n(события, задачи, шлюзы)" as UC_Model
     usecase "Построить диаграмму\nи просмотреть на холсте" as UC_BuildView
     usecase "Автоматическая проверка модели\n(валидация)" as UC_Validate <<система>>
     usecase "Экспортировать результат\n(BPMN XML, PNG, SVG)" as UC_Export
+    usecase "Сохранить диаграмму (БД)" as UC_SaveDb
   }
 
   package "Вспомогательные действия" as P_AUX {
@@ -65,41 +85,54 @@ rectangle "Система «BPMN Assistant»" as SYS {
     usecase "Очистить конструктор" as UC_Clear
   }
 
-  UC_Template -[hidden]right- UC_Import
+  UC_Template -[hidden]down- UC_Import
+  UC_Import -[hidden]down- UC_PoolLanes
   UC_PoolLanes -[hidden]down- UC_Model
   UC_Model -[hidden]down- UC_BuildView
-  UC_BuildView -[hidden]right- UC_Validate
-  UC_BuildView -[hidden]down- UC_Export
+  UC_BuildView -[hidden]down- UC_Validate
+  UC_Validate -[hidden]down- UC_Export
+  UC_Export -[hidden]down- UC_SaveDb
+
+  UC_DashList -[hidden]down- UC_NewDiag
+  UC_NewDiag -[hidden]down- UC_OpenDiag
+  UC_OpenDiag -[hidden]down- UC_DelDiag
+
   UC_UndoRedo -[hidden]right- UC_Clear
 
-  P_IN -[hidden]right- P_MAIN
-  P_MAIN -[hidden]right- P_AUX
+  P_HOME -[hidden]down- P_MAIN
+  P_MAIN -[hidden]down- P_AUX
+
+  UC_NewDiag --> UC_PoolLanes
+  UC_NewDiag ..[#5A7D4A]> UC_Import : <<extend>> — импорт\nфайла .bpmn (панель конструктора)
+  UC_OpenDiag --> UC_PoolLanes
+  UC_Template --> UC_PoolLanes
+  UC_Import --> UC_PoolLanes
+
+  UC_DashList ..[#2E526E]> UC_NewDiag : <<extend>>
+  UC_DashList ..[#6B4C7A]> UC_OpenDiag : <<extend>> — карточка\nили «Открыть»
+  UC_DashList ..[#8B4B3B]> UC_DelDiag : <<extend>>
+
+  UC_NewDiag ..[#4A6FA5]> UC_Template : <<extend>>
+  UC_OpenDiag ..[#4A6FA5]> UC_Template : <<extend>>
+  UC_OpenDiag ..[#5A7D4A]> UC_Import : <<extend>> — импорт\nв панели конструктора
+
+  UC_PoolLanes --> UC_Model
+
+  UC_Model --> UC_BuildView : кнопка «Построить»
+  UC_BuildView ..> UC_Validate : <<include>> — автоматически при построении
+  UC_BuildView --> UC_Export
+  UC_BuildView .[#1F4E79]> UC_SaveDb : <<extend>> — после построения\nи отображения на холсте
+  UC_BuildView .[#7A4A2F]> UC_Clear
+  UC_BuildView .[#3D5A80]> UC_UndoRedo
+
+  UC_Model .[#5B7C4A]> UC_UndoRedo : <<extend>>
+  UC_PoolLanes .[#6E5A8C]> UC_UndoRedo : <<extend>>
+  UC_PoolLanes .[#4A8B7B]> UC_Clear : <<extend>> при наличии элементов
+  UC_Model .[#8B6B2E]> UC_Clear : <<extend>> при наличии элементов
 }
 
-User --> UC_PoolLanes
-User --> UC_Model
-User --> UC_Template
-User --> UC_Import
-
-UC_PoolLanes --> UC_Model
-
-UC_Model --> UC_BuildView : кнопка «Построить»
-UC_BuildView ..> UC_Validate : <<include>> — автоматически при построении
-UC_BuildView --> UC_Export
-UC_BuildView .> UC_Clear
-UC_BuildView .> UC_UndoRedo
-
-UC_Template --> UC_PoolLanes
-UC_Template --> UC_Model
-
-UC_Import --> UC_PoolLanes
-UC_Import --> UC_Model
-UC_Import ..> UC_BuildView : <<альтернатива>> — быстрый просмотр без ручного ввода
-
-UC_Model .> UC_UndoRedo : <<extend>> при наличии истории изменений
-UC_PoolLanes .> UC_UndoRedo : <<extend>> при наличии истории изменений
-UC_PoolLanes .> UC_Clear : <<extend>> при наличии элементов
-UC_Model .> UC_Clear : <<extend>> при наличии элементов
+User --> UC_DashList
+User --> UC_NewDiag
 
 note bottom of UC_Validate
   Не инициируется пользователем: проверка целостности,
@@ -107,7 +140,7 @@ note bottom of UC_Validate
 end note
 
 note bottom of UC_BuildView
-  При построении диаграммы клиент запрашвивает
+  При построении диаграммы клиент запрашивает
   автоматическую разметку у бэкенда (process-bpmn);
   без валидной модели просмотр недоступен.
 end note

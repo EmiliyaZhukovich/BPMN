@@ -43,13 +43,17 @@ export class DiagramModel {
    * For backward compatibility
    */
   static migrateToDiagramModel(oldProcess) {
-    if (!oldProcess || !Array.isArray(oldProcess)) {
+    if (!oldProcess) {
       return DiagramModel.createEmptyDiagram();
     }
 
-    // Check if already in new format
+    // Уже диаграмма с пулами — не затирать (раньше неверно срабатывало !Array.isArray → пустой пул)
     if (oldProcess.pools || oldProcess.messageFlows !== undefined) {
       return oldProcess;
+    }
+
+    if (!Array.isArray(oldProcess)) {
+      return DiagramModel.createEmptyDiagram();
     }
 
     // Create default pool with one lane containing all elements

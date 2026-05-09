@@ -1,8 +1,6 @@
 @startuml bpmn-assistant-component-diagram
 title BPMN Assistant — диаграмма компонентов
 
-' Вертикальная схема: **сервер сверху** → **HTTP REST по центру между узлами** → **клиент снизу**
-' (без left-to-right, чтобы не уводить интерфейс под боковой край клиента)
 top to bottom direction
 
 skinparam shadowing false
@@ -18,72 +16,67 @@ skinparam component {
 skinparam artifact {
   BackgroundColor #FFFFFF
   BorderColor #8FA3B8
-  FontColor #1A2B3C
 }
 skinparam arrow {
   Color #4A5568
   FontSize 10
 }
-skinparam note {
-  BackgroundColor #FFFDF5
-  BorderColor #D4C48A
-  FontSize 10
-}
 
-' ========== 1. Серверная часть (вверху диаграммы) ==========
-package "Сервер приложений\n(Python + Node.js для скрипта разметки)" as PKG_SERVER {
+' ========== Сервер ==========
+package "Сервер приложений\n(Python + FastAPI + Node.js)" as PKG_SERVER {
+
+  component "FastAPI\n(REST API)" <<component>> as COMP_API
 
   together {
-    component "Сервис авторазметки\nBPMN" <<component>> as COMP_LAYOUT
+    component "Сервис авторазметки BPMN" <<component>> as COMP_LAYOUT
     component "Сервис преобразования\nBPMN XML → JSON" <<component>> as COMP_JSON
+    component "Сервис сохранённых диаграмм" <<component>> as COMP_SAVED
   }
 
-  together {
-    artifact "Скрипт разметки\n(layout_process.js)" <<artifact>> as ART_LAYOUT
-    artifact "Пакет приложения\n(Python-модули)" <<artifact>> as ART_PY
-  }
-
-  component "FastAPI" <<component>> as COMP_API
+  artifact "Скрипт разметки\n(layout_process.js)" <<artifact>> as ART_LAYOUT
+  artifact "Пакет Python-модулей" <<artifact>> as ART_PY
 }
 
 package "База данных (PostgreSQL)" as PKG_DB {
-
   database "PostgreSQL" as COMP_DB
 }
 
-' ========== 2. Контракт REST — строго между двумя прямоугольниками ==========
-() "HTTP REST\nBPMN Assistant" as IF_REST
+' ========== Контракт ==========
+() "HTTP REST\nBPMN Assistant API" as IF_REST
 
 note right of IF_REST
-  **Контракт API:**
-  • **POST** /process-bpmn
-  • **POST** /bpmn_to_json
+  **Основные эндпоинты:**
+  • POST /process-bpmn — генерация + разметка
+  • POST /bpmn_to_json
+  • GET /diagrams — список моделей
+  • GET/PUT/DELETE /diagrams/{id} — работа с моделью
 end note
 
-' ========== 3. Клиентская часть (внизу диаграммы) ==========
+' ========== Клиент ==========
 package "Клиентское окружение\n(браузер)" as PKG_CLIENT {
 
-  component "Одностраничное приложение\n«BPMN Assistant» (Vue.js)" <<component>> as COMP_SPA
-
-  together {
-    artifact "Сборка фронтенда\n(Vite)" <<artifact>> as ART_FE
-    component "Библиотека BPMN\n(bpmn-js)" <<component>> as COMP_BPMNJS
+  component "Одностраничное приложение\n«BPMN Assistant» (Vue.js)" <<component>> as COMP_SPA {
+    component "Главная страница\n(дашборд)" <<component>> as COMP_DASH
+    component "Редактор BPMN\n(конструктор + холст)" <<component>> as COMP_EDITOR
   }
+
+  component "Библиотека bpmn-js" <<component>> as COMP_BPMNJS
+  artifact "Сборка фронтенда (Vite)" <<artifact>> as ART_FE
 }
 
-' Главная «магистраль» без пересечения прямоугольников узлов
-COMP_API -down- IF_REST : реализует\nконечные точки
-COMP_SPA -up..> IF_REST : обращается по REST\n(требуемый контракт)
+' ========== Связи ==========
+COMP_API -down- IF_REST : реализует
+COMP_SPA -up..> IF_REST : использует
 
-' Внутренние связи сервера — в основном вверх от API, не через зону REST
-COMP_API -right..> COMP_DB : SQL\n(пользователи,\nсохранённые_модели)
-COMP_API -up..> COMP_LAYOUT : /process-bpmn
-COMP_API -up..> COMP_JSON : /bpmn_to_json
+COMP_API -right..> COMP_DB : SQL
+COMP_API -up..> COMP_LAYOUT
+COMP_API -up..> COMP_JSON
+COMP_API -up..> COMP_SAVED : CRUD операций
+
 COMP_LAYOUT -down..> ART_LAYOUT : subprocess
-COMP_API -left..> ART_PY : код\nприложения
-
-' Внутренние связи клиента — по горизонтали, вне вертикали REST
-COMP_SPA -down..> COMP_BPMNJS : холст BPMN
 COMP_SPA -left..> ART_FE : сборка
+
+COMP_DASH -right..> COMP_EDITOR : Vue Router
+COMP_EDITOR -down..> COMP_BPMNJS : визуализация
 
 @enduml

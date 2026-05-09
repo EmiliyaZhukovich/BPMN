@@ -23,6 +23,23 @@ function lastFlowNodeInPath(path) {
   return null;
 }
 
+/** Все ветки сходятся в nextElementId без отдельного join-шлюза (как XOR → задача с двумя входами). */
+function branchesMergeAtNextWithoutJoin(gatewayElement, nextElementId) {
+  if (!nextElementId || isParallelGatewayType(gatewayElement.type)) return false;
+  const branches = gatewayElement.branches;
+  if (!Array.isArray(branches) || branches.length === 0) return false;
+  for (const branch of branches) {
+    if (!branch.path || branch.path.length === 0) {
+      const targetRef = branch.next || nextElementId;
+      if (targetRef !== nextElementId) return false;
+    } else {
+      const tail = lastFlowNodeInPath(branch.path);
+      if (tail?.type === 'endEvent') return false;
+    }
+  }
+  return true;
+}
+
 function nextFlowNodeIdAfterIndex(processElements, fromIndex, parentNextId) {
   for (let j = fromIndex + 1; j < processElements.length; j++) {
     const el = processElements[j];
@@ -181,8 +198,10 @@ export function generateBpmnXml(diagramOrProcess) {
     let joinGatewayId = null;
     let joinGateway = null;
 
-    // Only create join gateway if there are elements after the gateway
-    if (nextElementId) {
+    const needJoinGateway =
+      Boolean(nextElementId) && !branchesMergeAtNextWithoutJoin(gatewayElement, nextElementId);
+
+    if (needJoinGateway) {
       joinGatewayId = `${gateway.id}-join`;
       joinGateway = {
         id: joinGatewayId,
@@ -225,7 +244,7 @@ export function generateBpmnXml(diagramOrProcess) {
       let mergedEndEventIdInBranch = null;
 
         // Transform branch path - don't pass joinGatewayId if branch ends with end event
-        const branchTargetId = branchEndsWithEndEvent ? null : joinGatewayId;
+        const branchTargetId = branchEndsWithEndEvent ? null : joinGatewayId || nextElementId;
         const branchElements = transformProcess(branch.path, branchTargetId);
 
         // Check if the last element is a duplicate end event
@@ -2956,29 +2975,14 @@ export function validateDiagram(diagram) {
     errors.push(`Элемент ${label} не имеет входящих переходов — он «висит» и не достижим из начала процесса.`);
   });
 
-  // Правило моделирования: у задач (всех типов) должен быть ровно один вход и один выход.
-  // На практике проверяем верхнюю границу: не допускаем >1 входа или >1 выхода.
+  // Правило моделирования: не больше одного исхода у задачи; несколько входов допустимы (слияние веток в одну активность — BPMN 2.0).
   flat.forEach((el) => {
     if (!el?.id || !el.type) return;
     if (!TASK_LIKE_TYPES.has(el.type)) return;
     const inc = allIncoming.get(el.id) || 0;
     const out = allOutgoing.get(el.id) || 0;
-    if (inc <= 1 && out <= 1) return;
+    if (out <= 1) return;
     const label = el.label?.trim() ? `«${el.label}»` : `(${el.type})`;
-    if (inc > 1 && out > 1) {
-      errors.push(
-        `Логическая ошибка BPMN: задача ${label} имеет несколько входящих (${inc}) и исходящих (${out}) переходов. ` +
-          'Для задач допускается только один вход и один выход.',
-      );
-      return;
-    }
-    if (inc > 1) {
-      errors.push(
-        `Логическая ошибка BPMN: задача ${label} имеет несколько входящих переходов (${inc}). ` +
-          'Для задач допускается только один вход.',
-      );
-      return;
-    }
     errors.push(
       `Логическая ошибка BPMN: задача ${label} имеет несколько исходящих переходов (${out}). ` +
         'Для задач допускается только один выход.',
