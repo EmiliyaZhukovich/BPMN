@@ -58,6 +58,8 @@ export default {
       bpmnViewer: null,
       constructorWidth: initialW,
       _resizeCleanup: null,
+      /** Счётчик вызовов importXML: отбрасываем устаревшие await после смены XML (гонка «очистка» vs «построить»). */
+      _bpmnImportSeq: 0,
       snackbar: {
         show: false,
         text: '',
@@ -269,6 +271,8 @@ export default {
       }
     },
     async handleBpmnXml(bpmnXmlValue) {
+      const importSeq = ++this._bpmnImportSeq;
+
       if (!bpmnXmlValue || bpmnXmlValue === '') {
         // Clear the diagram but keep viewer initialized
         if (this.bpmnViewer) {
@@ -279,6 +283,7 @@ export default {
             console.error('Failed to clear diagram:', err);
           }
         }
+        if (importSeq !== this._bpmnImportSeq) return;
         this.bpmnXml = '';
         return;
       }
@@ -300,6 +305,7 @@ export default {
         try {
           if (!skipExternalLayout) {
             const layoutedXml = await this.processDiagram(bpmnXmlValue);
+            if (importSeq !== this._bpmnImportSeq) return;
             if (layoutedXml && layoutedXml.trim() !== '') {
               console.log('Layouted XML received:', layoutedXml.substring(0, 200));
               xmlToImport = layoutedXml;
@@ -311,10 +317,13 @@ export default {
           console.warn('Layout server error, using original XML:', layoutError);
         }
 
+        if (importSeq !== this._bpmnImportSeq) return;
+
         this.bpmnXml = xmlToImport;
 
         // Import the diagram
         const { warnings } = await this.bpmnViewer.importXML(xmlToImport);
+        if (importSeq !== this._bpmnImportSeq) return;
         console.log('BPMN diagram imported successfully', warnings);
         this.bpmnViewer.get('canvas').zoom('fit-viewport');
         // Скрываем логотип после импорта
@@ -327,6 +336,7 @@ export default {
         // Try to import without layout as fallback
         try {
           await this.bpmnViewer.importXML(bpmnXmlValue);
+          if (importSeq !== this._bpmnImportSeq) return;
           this.bpmnViewer.get('canvas').zoom('fit-viewport');
           this.showSnackbar('Диаграмма построена (без авто-разметки)', 'warning');
           this.bpmnXml = bpmnXmlValue;

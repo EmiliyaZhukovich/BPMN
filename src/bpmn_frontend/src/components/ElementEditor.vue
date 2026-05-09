@@ -85,14 +85,27 @@
     <div v-if="showAssociations" class="associations-container">
       <div class="associations-header">
         <span class="associations-title">Ассоциации</span>
-        <v-btn
-          icon="mdi-plus"
-          size="x-small"
-          variant="text"
-          color="primary"
-          :title="'Добавить ассоциацию'"
-          @click.stop="addAssociationRow"
-        />
+        <v-menu>
+          <template v-slot:activator="{ props: menuProps }">
+            <v-btn
+              v-bind="menuProps"
+              icon="mdi-plus"
+              size="x-small"
+              variant="text"
+              color="primary"
+              :title="'Добавить ассоциацию'"
+            />
+          </template>
+          <v-list density="compact">
+            <v-list-subheader>Ассоциация с данными</v-list-subheader>
+            <v-list-item @click="addAssociationWithNewData('dataObjectReference')">
+              <v-list-item-title>Объект данных</v-list-item-title>
+            </v-list-item>
+            <v-list-item @click="addAssociationWithNewData('dataStoreReference')">
+              <v-list-item-title>Хранилище данных</v-list-item-title>
+            </v-list-item>
+          </v-list>
+        </v-menu>
         <v-btn
           v-if="element && element.type !== 'dataObjectReference' && element.type !== 'dataStoreReference' && element.type !== 'textAnnotation'"
           icon="mdi-note-plus-outline"
@@ -123,24 +136,6 @@
           :model-value="assoc.targetRef"
           placeholder="К чему привязать"
           @update:model-value="(v) => updateAssociation(idx, { targetRef: v })"
-        />
-        <v-select
-          v-if="targetAllowsDirection(assoc.targetRef)"
-          :items="associationDirectionItems"
-          item-title="title"
-          item-value="value"
-          density="compact"
-          hide-details
-          class="association-direction"
-          :model-value="assoc.direction"
-          @update:model-value="(v) => updateAssociation(idx, { direction: v })"
-        />
-        <input
-          v-if="!targetIsTextAnnotation(assoc.targetRef) && element && element.type !== 'textAnnotation'"
-          :value="assoc.label"
-          @input="(e) => updateAssociation(idx, { label: e.target.value })"
-          placeholder="Подпись (опц.)"
-          class="association-label"
         />
         <v-btn
           icon="mdi-close"
@@ -287,8 +282,9 @@
 </template>
 
 <script>
-import { ref, computed, watch, inject } from 'vue';
+import { ref, computed, watch, inject, nextTick } from 'vue';
 import { BPMN_PALETTE_GROUPS, isGatewayType } from '../utils/bpmnPalette.js';
+import { createElement } from '../utils/diagramModel.js';
 
 export default {
   name: 'ElementEditor',
@@ -441,13 +437,16 @@ export default {
       return options;
     });
 
-    const showAssociations = computed(() => Boolean(diagram.value));
+    const isArtifactNode = computed(() => {
+      const t = props.element?.type;
+      return t === 'dataObjectReference' || t === 'dataStoreReference' || t === 'textAnnotation';
+    });
+    // Ассоциации добавляются только на обычных flow-элементах (не на данных/аннотациях)
+    const showAssociations = computed(() => Boolean(diagram.value) && !isArtifactNode.value);
 
-    const associationDirectionItems = [
-      { title: 'Без направления', value: 'none' },
-      { title: 'К объекту', value: 'to' },
-      { title: 'От объекта', value: 'from' },
-    ];
+    // По требованиям: направление для данных не выбирается — всегда «к объекту».
+
+    const isDataLikeType = (t) => t === 'dataObjectReference' || t === 'dataStoreReference';
 
     function collectAssociationTargetOptions() {
       const d = diagram.value;
@@ -497,12 +496,6 @@ export default {
       return found;
     }
 
-    function targetAllowsDirection(targetRef) {
-      // Direction choice only for data objects / data stores.
-      const t = getNodeTypeById(targetRef);
-      return t === 'dataObjectReference' || t === 'dataStoreReference';
-    }
-
     function targetIsTextAnnotation(targetRef) {
       const t = getNodeTypeById(targetRef);
       return t === 'textAnnotation';
@@ -521,18 +514,21 @@ export default {
       localOutgoingAssociations.value = assocs
         .filter((a) => a && a.sourceRef === id)
         .map((a) => ({
-          _uiId: a.id || `${Date.now()}_${Math.random()}`,
+          _uiId: a.id || `assoc_${a.sourceRef}_${a.targetRef}`,
           id: a.id,
           targetRef: a.targetRef,
-          label: a.label || '',
-          direction: a.direction || 'none',
+          direction: a.direction === 'none' ? 'none' : 'to',
         }));
     }
 
     watch(
-      () => [diagram.value?.associations, props.element?.id],
+      diagram,
       () => syncOutgoingAssociationsFromDiagram(),
       { deep: true, immediate: true }
+    );
+    watch(
+      () => props.element?.id,
+      () => syncOutgoingAssociationsFromDiagram()
     );
 
     function emitAssociationsUpdate(nextOutgoing) {
@@ -547,10 +543,11 @@ export default {
           id: a.id || undefined,
           sourceRef: id,
           targetRef: a.targetRef,
-          label: a.label || '',
-          direction: a.direction || 'none',
+          label: '',
+          direction: a.direction === 'none' ? 'none' : 'to',
         }));
       emit('associations:update', [...kept, ...next]);
+      nextTick(() => syncOutgoingAssociationsFromDiagram());
     }
 
     function addAssociationRow() {
@@ -559,8 +556,39 @@ export default {
         _uiId: `${Date.now()}_${Math.random()}`,
         id: undefined,
         targetRef: '',
-        label: '',
-        direction: 'none',
+        direction: 'to',
+      });
+      localOutgoingAssociations.value = next;
+      emitAssociationsUpdate(next);
+    }
+
+    function findLaneAndIndexForElementId(elementId) {
+      const d = diagram.value;
+      if (!d?.pools?.[0]?.lanes || !elementId) return null;
+      for (const lane of d.pools[0].lanes) {
+        const idx = (lane.elements || []).findIndex((e) => e && e.id === elementId);
+        if (idx !== -1) return { lane, idx };
+      }
+      return null;
+    }
+
+    function addAssociationWithNewData(type) {
+      const d = diagram.value;
+      const selfId = props.element?.id;
+      if (!d || !selfId) return;
+      const loc = findLaneAndIndexForElementId(selfId);
+      if (!loc) return;
+      const dataEl = createElement(type, '');
+      // Put data element right after current element in the same lane
+      loc.lane.elements = Array.isArray(loc.lane.elements) ? loc.lane.elements : [];
+      loc.lane.elements.splice(loc.idx + 1, 0, dataEl);
+
+      const next = [...localOutgoingAssociations.value];
+      next.push({
+        _uiId: `${Date.now()}_${Math.random()}`,
+        id: undefined,
+        targetRef: dataEl.id,
+        direction: 'to', // fixed
       });
       localOutgoingAssociations.value = next;
       emitAssociationsUpdate(next);
@@ -570,13 +598,9 @@ export default {
       const next = [...localOutgoingAssociations.value];
       if (!next[idx]) return;
       next[idx] = { ...next[idx], ...patch };
-      // If target isn't data/db, force direction = none. For textAnnotation always none.
+      next[idx].direction = 'to';
       const tgt = next[idx].targetRef;
-      if (!targetAllowsDirection(tgt)) {
-        next[idx].direction = 'none';
-      }
       if (targetIsTextAnnotation(tgt) || props.element?.type === 'textAnnotation') {
-        next[idx].label = '';
         next[idx].direction = 'none';
       }
       localOutgoingAssociations.value = next;
@@ -956,11 +980,9 @@ export default {
       updateNextElement,
       showAssociations,
       associationTargetOptions,
-      associationDirectionItems,
-      targetAllowsDirection,
-      targetIsTextAnnotation,
       localOutgoingAssociations,
       addAssociationRow,
+      addAssociationWithNewData,
       updateAssociation,
       removeAssociationRow,
       taskTypes,
@@ -1128,18 +1150,10 @@ export default {
 
 .association-row {
   display: grid;
-  grid-template-columns: 1.2fr 0.9fr 1fr auto;
+  grid-template-columns: 1fr auto;
   gap: 6px;
   align-items: center;
   margin-bottom: 6px;
-}
-
-.association-label {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid rgba(0, 0, 0, 0.18);
-  border-radius: 6px;
-  font-size: 0.85rem;
 }
 
 .gateway-question-section {

@@ -408,12 +408,12 @@ export default {
       return getAllElements(diagram.value).length > 0;
     });
 
-    // Don't auto-update diagram, wait for build button
+    // Не пересобираем превью автоматически: только сбрасываем флаг «построено».
+    // Раньше здесь эмитился пустой XML — это гонялось с «Построить» (importXML) и ломало первый показ.
     watch(
       diagram,
       () => {
         diagramBuilt.value = false;
-        emit('bpmn-xml-updated', '');
       },
       { deep: true }
     );
@@ -488,7 +488,24 @@ export default {
     }
 
     function setAssociations(nextAssociations) {
-      diagram.value.associations = Array.isArray(nextAssociations) ? nextAssociations : [];
+      const list = Array.isArray(nextAssociations) ? nextAssociations : [];
+      const usedIds = new Set();
+      diagram.value.associations = list
+        .filter(Boolean)
+        .map((a) => {
+          const copy = { ...a };
+          let aid = copy.id != null && String(copy.id).trim() !== '' ? String(copy.id) : null;
+          if (!aid || usedIds.has(aid)) {
+            aid = createAssociation(
+              copy.sourceRef,
+              copy.targetRef,
+              copy.label || '',
+              copy.direction === 'none' ? 'none' : 'to'
+            ).id;
+          }
+          usedIds.add(aid);
+          return { ...copy, id: aid };
+        });
       saveToHistory();
     }
 
@@ -553,25 +570,38 @@ export default {
     function deleteElement(poolIndex, laneIndex, elementIndex) {
       const pool = diagram.value.pools[poolIndex];
       const lane = pool.lanes[laneIndex];
-      if (lane.elements) {
-        lane.elements.splice(elementIndex, 1);
-        saveToHistory();
+      if (!lane.elements) return;
+      const removed = lane.elements[elementIndex];
+      const removedId = removed?.id;
+      lane.elements.splice(elementIndex, 1);
+      if (removedId && Array.isArray(diagram.value.associations)) {
+        diagram.value.associations = diagram.value.associations.filter(
+          (a) => a && a.sourceRef !== removedId && a.targetRef !== removedId
+        );
       }
+      saveToHistory();
     }
 
     // Legacy method for backward compatibility
     function deleteElementLegacy(index) {
       const lane = getCurrentLane();
-      if (lane.elements) {
-        lane.elements.splice(index, 1);
-        saveToHistory();
+      if (!lane.elements) return;
+      const removed = lane.elements[index];
+      const removedId = removed?.id;
+      lane.elements.splice(index, 1);
+      if (removedId && Array.isArray(diagram.value.associations)) {
+        diagram.value.associations = diagram.value.associations.filter(
+          (a) => a && a.sourceRef !== removedId && a.targetRef !== removedId
+        );
       }
+      saveToHistory();
     }
 
     function clearAll() {
       diagram.value = createEmptyDiagram();
       diagramBuilt.value = false;
       saveToHistory();
+      emit('bpmn-xml-updated', '');
     }
 
     function buildDiagram() {
@@ -648,6 +678,7 @@ export default {
         }
         diagramBuilt.value = false;
         saveToHistory();
+        emit('bpmn-xml-updated', '');
       }
     }
 

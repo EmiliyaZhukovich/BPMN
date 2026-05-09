@@ -638,7 +638,7 @@ function buildXml(elements, flows, processInfo = null) {
 
   // Add elements
   elements.forEach((element) => {
-    xml += buildFlowNodeXml(element, '    ');
+    xml += buildFlowNodeXml(element, '    ', null);
   });
 
   // Add sequence flows
@@ -735,6 +735,29 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
 
   xml += `  </collaboration>\n`;
 
+  /** Уникальный id элемента &lt;dataOutputAssociation&gt; в XML (слабые ссылки на объекты из diagram.associations). */
+  const dataOutputBpmnIdByAssocRef = new WeakMap();
+  const usedDataOutputBpmnIds = new Set();
+  let dataAssocGlobalSeq = 0;
+
+  function allocateDataOutputBpmnId(assoc) {
+    const raw =
+      assoc && assoc.id != null && String(assoc.id).trim() !== ''
+        ? String(assoc.id).replace(/[^a-zA-Z0-9_-]/g, '_')
+        : `gen${dataAssocGlobalSeq}`;
+    let bpmnId = `DataOutputAssociation_${raw}`;
+    if (usedDataOutputBpmnIds.has(bpmnId)) {
+      bpmnId = `DataOutputAssociation_${raw}_s${dataAssocGlobalSeq}`;
+    }
+    let bump = 0;
+    while (usedDataOutputBpmnIds.has(bpmnId)) {
+      bump += 1;
+      bpmnId = `DataOutputAssociation_${raw}_s${dataAssocGlobalSeq}_${bump}`;
+    }
+    usedDataOutputBpmnIds.add(bpmnId);
+    return bpmnId;
+  }
+
   // Add processes
   processes.forEach((processInfo) => {
     xml += `  <process id="${processInfo.processId}" isExecutable="false">\n`;
@@ -753,9 +776,53 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       xml += `    </laneSet>\n`;
     }
 
-    // Add elements
+    // --- Prepare data associations (dataInput/dataOutput) ---
+    const typeById = new Map();
+    processInfo.elements.forEach((el) => {
+      if (el?.id && el.type) typeById.set(el.id, el.type);
+    });
+    (processInfo.artifacts || []).forEach((a) => {
+      if (a?.id && a.type) typeById.set(a.id, a.type);
+    });
+
+    const dataAssociationsByElementId = new Map(); // elementId -> [{ id, kind, otherRef }]
+    const dataAssocDi = []; // [{ id, sourceRef, targetRef, direction }]
+    const dataObjectRefToObjectId = new Map(); // dataObjectReferenceId -> dataObjectId
+    (processInfo.associations || []).forEach((a) => {
+      if (!a?.sourceRef || !a.targetRef) return;
+      const srcType = typeById.get(a.sourceRef);
+      const tgtType = typeById.get(a.targetRef);
+      const isData =
+        srcType === 'dataObjectReference' || srcType === 'dataStoreReference' ||
+        tgtType === 'dataObjectReference' || tgtType === 'dataStoreReference';
+      const isTextAnn = srcType === 'textAnnotation' || tgtType === 'textAnnotation';
+      if (!isData || isTextAnn) return;
+
+      const dataId =
+        (srcType === 'dataObjectReference' || srcType === 'dataStoreReference') ? a.sourceRef
+          : (tgtType === 'dataObjectReference' || tgtType === 'dataStoreReference') ? a.targetRef
+            : null;
+      const otherId = dataId === a.sourceRef ? a.targetRef : a.sourceRef;
+      if (!dataId || !otherId) return;
+
+      dataAssocGlobalSeq += 1;
+      const assocId = allocateDataOutputBpmnId(a);
+      dataOutputBpmnIdByAssocRef.set(a, assocId);
+      const kind = 'dataOutputAssociation';
+
+      const arr = dataAssociationsByElementId.get(otherId) || [];
+      arr.push({ id: assocId, kind, otherRef: dataId });
+      dataAssociationsByElementId.set(otherId, arr);
+
+      // for DI routing later
+      const srcRef = otherId;
+      const tgtRef = dataId;
+      dataAssocDi.push({ id: assocId, sourceRef: srcRef, targetRef: tgtRef, direction: a.direction });
+    });
+
+    // Add elements (with embedded data associations if any)
     processInfo.elements.forEach((element) => {
-      xml += buildFlowNodeXml(element, '    ');
+      xml += buildFlowNodeXml(element, '    ', { dataAssociationsByElementId });
     });
 
     // Add artifacts / data objects (not flow nodes)
@@ -771,8 +838,11 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         return;
       }
       if (a.type === 'dataObjectReference') {
+        const objId = `DataObject_${a.id}`;
+        dataObjectRefToObjectId.set(a.id, objId);
         const name = a.label != null && String(a.label).trim() !== '' ? ` name="${escapeXml(String(a.label))}"` : '';
-        xml += `    <dataObjectReference id="${a.id}"${name}/>\n`;
+        xml += `    <dataObjectReference id="${a.id}" dataObjectRef="${objId}"${name}/>\n`;
+        xml += `    <dataObject id="${objId}"/>\n`;
         return;
       }
       if (a.type === 'dataStoreReference') {
@@ -787,14 +857,6 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     });
 
     // Add associations (for data / annotations)
-    const typeById = new Map();
-    processInfo.elements.forEach((el) => {
-      if (el?.id && el.type) typeById.set(el.id, el.type);
-    });
-    (processInfo.artifacts || []).forEach((a) => {
-      if (a?.id && a.type) typeById.set(a.id, a.type);
-    });
-
     (processInfo.associations || []).forEach((a) => {
       if (!a?.id || !a.sourceRef || !a.targetRef) return;
       if (!procArtifactIds.has(a.sourceRef) && !procArtifactIds.has(a.targetRef)) {
@@ -814,14 +876,10 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
         targetRef = a.sourceRef;
       }
 
-      if (!involvesTextAnnotation && involvesData && a.direction === 'from') {
-        // interpret as arrow "from object": swap direction visually by swapping ends
-        sourceRef = a.targetRef;
-        targetRef = a.sourceRef;
-      }
-      const dirAttr = (!involvesTextAnnotation && involvesData && a.direction && a.direction !== 'none')
-        ? 'One'
-        : 'None';
+      // Data associations are emitted as dataInputAssociation/dataOutputAssociation inside the flow node.
+      if (involvesData) return;
+
+      const dirAttr = 'None';
       const name = a.label != null && String(a.label).trim() !== '' ? ` name="${escapeXml(String(a.label))}"` : '';
       xml += `    <association id="${a.id}" sourceRef="${sourceRef}" targetRef="${targetRef}" associationDirection="${dirAttr}"${name}/>\n`;
     });
@@ -1716,6 +1774,22 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     if (!processInfo) return;
     let maxX = -Infinity;
     let maxY = -Infinity;
+    const considerNodeForBounds = (nodeId, extra = null) => {
+      if (!nodeId) return;
+      const pos = elementPositionMap.get(nodeId);
+      const size = elementSizeMap.get(nodeId);
+      if (!pos || !size) return;
+      const right = pos.x + size.w / 2;
+      let bottom = pos.y + size.h / 2;
+      if (extra && typeof extra.bottom === 'number') bottom += extra.bottom;
+      if (extra && typeof extra.right === 'number') {
+        const r2 = right + extra.right;
+        if (r2 > maxX) maxX = r2;
+      }
+      if (right > maxX) maxX = right;
+      if (bottom > maxY) maxY = bottom;
+    };
+
     processInfo.elements.forEach((el) => {
       const pos = elementPositionMap.get(el.id);
       const size = elementSizeMap.get(el.id);
@@ -1725,10 +1799,24 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       if (right > maxX) maxX = right;
       if (bottom > maxY) maxY = bottom;
     });
+
+    // IMPORTANT: artifacts (data objects / annotations) also must fit inside lane/pool bounds.
+    // bpmn-js renders external labels for data objects below the shape — account for that height.
+    (processInfo.artifacts || []).forEach((a) => {
+      if (!a?.id) return;
+      const t = a.type;
+      const hasLabel = a.label != null && String(a.label).trim() !== '';
+      const labelPadBottom =
+        hasLabel && (t === 'dataObjectReference' || t === 'dataStoreReference')
+          ? 26
+          : 0;
+      considerNodeForBounds(a.id, { bottom: labelPadBottom });
+    });
     if (!Number.isFinite(maxX)) return;
 
-    const newW = Math.max(meta.initialWidth, maxX - meta.participantX + POOL_CONTENT_PAD);
-    const newH = Math.max(meta.initialHeight, maxY - meta.participantY + POOL_CONTENT_PAD);
+    const EXTRA_SAFETY_PAD = 18;
+    const newW = Math.max(meta.initialWidth, maxX - meta.participantX + POOL_CONTENT_PAD + EXTRA_SAFETY_PAD);
+    const newH = Math.max(meta.initialHeight, maxY - meta.participantY + POOL_CONTENT_PAD + EXTRA_SAFETY_PAD);
     const deltaH = newH - meta.initialHeight;
 
     replaceBpmnShapeBounds(planeShapes, meta.participantId, meta.participantX, meta.participantY, newW, newH);
@@ -1798,7 +1886,19 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       associationsForArtifact.set(a.targetRef, arr);
     }
   });
-  const artifactStackCounter = new Map(); // key anchorId+type -> count
+  /** Левый край следующего слота в ряду под якорем (dataObject + dataStore — один ряд, без наложений). */
+  const artifactBelowNextLeft = new Map();
+  /** Левый край следующей аннотации в ряду над якорем (горизонтально). */
+  const artifactAboveNextLeft = new Map();
+
+  const BELOW_ROW_GAP = 14;
+  const BELOW_FIRST_CENTER_X_BIAS = 14;
+  const BELOW_ROW_Y_OFFSET = 34;
+
+  const ANN_ROW_GAP = 12;
+  const ANN_FIRST_LEFT_INSET = 14;
+  const ANN_ROW_Y_CLEAR = 22;
+
   allArtifacts.forEach((a) => {
     if (!a?.id || !a.type) return;
     const links = associationsForArtifact.get(a.id) || [];
@@ -1823,33 +1923,88 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       a.type === 'textAnnotation'
         ? sizeForTextAnnotation(a.label)
         : a.type === 'dataStoreReference'
-          ? { w: 60, h: 60 }
-          : { w: 50, h: 50 };
+          ? { w: 50, h: 50 }
+          : { w: 36, h: 50 }; // dataObjectReference — как в bpmn-js
     elementSizeMap.set(a.id, size);
 
     let x = anchorPos ? anchorPos.x : 220;
     let y = anchorPos ? anchorPos.y : 220;
-    const key = `${anchorId || 'none'}:${a.type}`;
-    const stack = artifactStackCounter.get(key) || 0;
-    artifactStackCounter.set(key, stack + 1);
 
     if (anchorPos) {
       if (a.type === 'textAnnotation') {
-        // Place above and to the right of the element (like bpmn-js typical placement)
-        x = anchorPos.x + anchorSize.w / 2 + size.w / 2 + 14 + stack * 14;
-        y = anchorPos.y - anchorSize.h / 2 - size.h / 2 - 22 - stack * 10;
-      } else if (a.type === 'dataStoreReference') {
-        x = anchorPos.x + stack * 18;
-        y = anchorPos.y + anchorSize.h / 2 + 80 + stack * 18;
+        const aid = anchorId || 'none';
+        let leftEdge = artifactAboveNextLeft.get(aid);
+        if (leftEdge === undefined) {
+          leftEdge = anchorPos.x + anchorSize.w / 2 + ANN_FIRST_LEFT_INSET;
+        }
+        x = leftEdge + size.w / 2;
+        y = anchorPos.y - anchorSize.h / 2 - size.h / 2 - ANN_ROW_Y_CLEAR;
+        artifactAboveNextLeft.set(aid, leftEdge + size.w + ANN_ROW_GAP);
       } else {
-        // dataObjectReference
-        x = anchorPos.x + stack * 18;
-        y = anchorPos.y - anchorSize.h / 2 - 80 - stack * 18;
+        // dataObjectReference и dataStoreReference — одна горизонтальная линия под элементом
+        const aid = anchorId || 'none';
+        let leftEdge = artifactBelowNextLeft.get(aid);
+        if (leftEdge === undefined) {
+          leftEdge = anchorPos.x + BELOW_FIRST_CENTER_X_BIAS - size.w / 2;
+        }
+        x = leftEdge + size.w / 2;
+        y = anchorPos.y + anchorSize.h / 2 + size.h / 2 + BELOW_ROW_Y_OFFSET;
+        artifactBelowNextLeft.set(aid, leftEdge + size.w + BELOW_ROW_GAP);
       }
     }
 
     elementPositionMap.set(a.id, { x, y });
     pushShape(a.id, a.id, x - size.w / 2, y - size.h / 2, size.w, size.h);
+  });
+
+  // After artifacts are positioned, ensure pools/lanes are large enough (including external labels).
+  // bpmn-js renders external labels for data objects below the shape; expand lane/pool so they never overflow.
+  const AFTER_ARTIFACT_PAD = 44;
+  participantDiMeta.forEach((meta) => {
+    if (!meta.processId) return;
+    const processInfo = [...processes.values()].find((p) => p.processId === meta.processId);
+    if (!processInfo) return;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    function consider(nodeId, extraBottom = 0) {
+      if (!nodeId) return;
+      const pos = elementPositionMap.get(nodeId);
+      const size = elementSizeMap.get(nodeId);
+      if (!pos || !size) return;
+      const right = pos.x + size.w / 2;
+      const bottom = pos.y + size.h / 2 + (extraBottom || 0);
+      if (right > maxX) maxX = right;
+      if (bottom > maxY) maxY = bottom;
+    }
+    processInfo.elements.forEach((el) => consider(el?.id, 0));
+    (processInfo.artifacts || []).forEach((a) => {
+      const t = a?.type;
+      const hasLabel = a?.label != null && String(a.label).trim() !== '';
+      const extraBottom =
+        hasLabel && (t === 'dataObjectReference' || t === 'dataStoreReference') ? 34 : 0;
+      consider(a?.id, extraBottom);
+    });
+    if (!Number.isFinite(maxX) || !Number.isFinite(maxY)) return;
+
+    const newW = Math.max(meta.initialWidth, maxX - meta.participantX + POOL_CONTENT_PAD + AFTER_ARTIFACT_PAD);
+    const newH = Math.max(meta.initialHeight, maxY - meta.participantY + POOL_CONTENT_PAD + AFTER_ARTIFACT_PAD);
+    const deltaH = newH - meta.initialHeight;
+
+    replaceBpmnShapeBounds(planeShapes, meta.participantId, meta.participantX, meta.participantY, newW, newH);
+    participantPosByProcess.set(meta.processId, { x: meta.participantX, y: meta.participantY, w: newW, h: newH });
+
+    if (meta.lanes.length === 0) return;
+    const laneW = newW - 40;
+    if (meta.lanes.length === 1) {
+      const lm = meta.lanes[0];
+      replaceBpmnShapeBounds(planeShapes, lm.bpmnElement, lm.x, lm.y, laneW, newH);
+    } else {
+      meta.lanes.forEach((lm, idx) => {
+        const isLast = idx === meta.lanes.length - 1;
+        const h = isLast ? lm.h + deltaH : lm.h;
+        replaceBpmnShapeBounds(planeShapes, lm.bpmnElement, lm.x, lm.y, laneW, h);
+      });
+    }
   });
 
   // Edges for sequence flows
@@ -2095,35 +2250,88 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     }
   });
 
-  // Edges for associations (data / annotations)
+  // Edges for associations (text annotations) and data associations (dataInput/dataOutput)
   assocList.forEach((a) => {
-    if (!a?.id || !a.sourceRef || !a.targetRef) return;
-    // Normalize for textAnnotation edges: draw from element -> annotation
+    if (!a?.sourceRef || !a.targetRef) return;
+
     const srcType = elementTypeById.get(a.sourceRef);
     const tgtType = elementTypeById.get(a.targetRef);
-    let srcRef = a.sourceRef;
-    let tgtRef = a.targetRef;
-    if (srcType === 'textAnnotation' && tgtType !== 'textAnnotation') {
-      srcRef = a.targetRef;
-      tgtRef = a.sourceRef;
+    const involvesTextAnnotation = srcType === 'textAnnotation' || tgtType === 'textAnnotation';
+    const involvesData =
+      srcType === 'dataObjectReference' || srcType === 'dataStoreReference' ||
+      tgtType === 'dataObjectReference' || tgtType === 'dataStoreReference';
+
+    // --- TextAnnotation: element(top center) -> annotation(bottom center)
+    if (involvesTextAnnotation) {
+      if (!a.id) return;
+      let srcRef = a.sourceRef;
+      let tgtRef = a.targetRef;
+      if (srcType === 'textAnnotation' && tgtType !== 'textAnnotation') {
+        srcRef = a.targetRef;
+        tgtRef = a.sourceRef;
+      }
+      const src = elementPositionMap.get(srcRef);
+      const tgt = elementPositionMap.get(tgtRef);
+      if (!src || !tgt) return;
+      const srcSize = elementSizeMap.get(srcRef) || { w: 36, h: 36 };
+      const tgtSize = elementSizeMap.get(tgtRef) || { w: 120, h: 44 };
+      const start = { x: src.x, y: src.y - srcSize.h / 2 };
+      const end = { x: tgt.x, y: tgt.y + tgtSize.h / 2 };
+      const targetForLabel = { x: tgt.x, y: tgt.y, w: tgtSize.w, h: tgtSize.h };
+      pushEdge(a.id, a.id, start, end, '', targetForLabel);
+      return;
     }
 
-    const src = elementPositionMap.get(srcRef);
-    const tgt = elementPositionMap.get(tgtRef);
-    if (!src || !tgt) return;
-    const srcSize = elementSizeMap.get(srcRef) || { w: 36, h: 36 };
-    const tgtSize = elementSizeMap.get(tgtRef) || { w: 36, h: 36 };
+    // --- Data associations: bottom center of element -> top center of data, slightly to the right (orthogonal)
+    if (involvesData) {
+      const dataId =
+        (srcType === 'dataObjectReference' || srcType === 'dataStoreReference') ? a.sourceRef
+          : (tgtType === 'dataObjectReference' || tgtType === 'dataStoreReference') ? a.targetRef
+            : null;
+      const otherId = dataId === a.sourceRef ? a.targetRef : a.sourceRef;
+      if (!dataId || !otherId) return;
 
-    const isToTextAnnotation = elementTypeById.get(tgtRef) === 'textAnnotation';
+      const assocElementId = dataOutputBpmnIdByAssocRef.get(a);
+      if (!assocElementId) return;
 
-    const start = isToTextAnnotation
-      ? { x: src.x, y: src.y - srcSize.h / 2 } // top center of element
-      : { x: src.x + srcSize.w / 2, y: src.y }; // default
-    const end = isToTextAnnotation
-      ? { x: tgt.x, y: tgt.y + tgtSize.h / 2 } // bottom center of annotation
-      : { x: tgt.x - tgtSize.w / 2, y: tgt.y }; // default
-    const targetForLabel = { x: tgt.x, y: tgt.y, w: tgtSize.w, h: tgtSize.h };
-    pushEdge(a.id, a.id, start, end, a.label || '', targetForLabel);
+      const srcRef = otherId;
+      const tgtRef = dataId;
+
+      const src = elementPositionMap.get(srcRef);
+      const tgt = elementPositionMap.get(tgtRef);
+      if (!src || !tgt) return;
+      const srcSize = elementSizeMap.get(srcRef) || { w: 36, h: 36 };
+      const tgtSize = elementSizeMap.get(tgtRef) || { w: 50, h: 50 };
+
+      // Straight diagonal. Keep it short and outside shapes:
+      // - Output (element -> data): element bottom -> data top
+      // - Input  (data -> element): data top -> element bottom
+      const srcIsData = elementTypeById.get(srcRef) === 'dataObjectReference' || elementTypeById.get(srcRef) === 'dataStoreReference';
+      const tgtIsData = elementTypeById.get(tgtRef) === 'dataObjectReference' || elementTypeById.get(tgtRef) === 'dataStoreReference';
+
+      const start = srcIsData
+        ? {
+            x: Math.round(src.x + srcSize.w * 0.10),
+            y: Math.round(src.y - srcSize.h / 2),
+          } // from top of data
+        : {
+            x: Math.round(src.x - srcSize.w * 0.10),
+            y: Math.round(src.y + srcSize.h / 2),
+          }; // from bottom of element
+
+      const end = tgtIsData
+        ? {
+            x: Math.round(tgt.x + tgtSize.w * 0.10),
+            y: Math.round(tgt.y - tgtSize.h / 2),
+          } // to top of data
+        : {
+            x: Math.round(tgt.x - tgtSize.w * 0.10),
+            y: Math.round(tgt.y + tgtSize.h / 2),
+          }; // to bottom of element
+      const targetForLabel = { x: tgt.x, y: tgt.y, w: tgtSize.w, h: tgtSize.h };
+      pushEdge(assocElementId, assocElementId, start, end, '', targetForLabel);
+      return;
+    }
   });
 
   // Add BPMNDI with generated shapes/edges
@@ -2176,7 +2384,7 @@ function isTaskLikeType(type) {
 }
 
 /** Один flowNode в XML (подпроцесс — с минимальной внутренней диаграммой start→end). */
-function buildFlowNodeXml(element, indent = '    ') {
+function buildFlowNodeXml(element, indent = '    ', opts = null) {
   const childIndent = `${indent}  `;
   if (element.type === 'subProcess') {
     const innerStart = `${element.id}_inner_start`;
@@ -2214,6 +2422,20 @@ function buildFlowNodeXml(element, indent = '    ') {
 
   element.outgoing.forEach((flowId) => {
     s += `${childIndent}<outgoing>${flowId}</outgoing>\n`;
+  });
+
+  const dataAssocs = opts?.dataAssociationsByElementId?.get(element.id) || [];
+  dataAssocs.forEach((da) => {
+    if (!da?.id || !da.kind || !da.otherRef) return;
+    if (da.kind === 'dataInputAssociation') {
+      s += `${childIndent}<dataInputAssociation id="${da.id}">\n`;
+      s += `${childIndent}  <sourceRef>${da.otherRef}</sourceRef>\n`;
+      s += `${childIndent}</dataInputAssociation>\n`;
+    } else if (da.kind === 'dataOutputAssociation') {
+      s += `${childIndent}<dataOutputAssociation id="${da.id}">\n`;
+      s += `${childIndent}  <targetRef>${da.otherRef}</targetRef>\n`;
+      s += `${childIndent}</dataOutputAssociation>\n`;
+    }
   });
 
   if (element.eventDefinition && element.eventDefinition !== 'none') {
