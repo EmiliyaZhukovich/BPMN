@@ -113,7 +113,7 @@
           variant="text"
           color="secondary"
           :title="'Добавить текстовую аннотацию'"
-          @click.stop="$emit('annotation:add')"
+          @click.stop="$emit('annotation:add', element.id)"
         />
       </div>
 
@@ -210,6 +210,8 @@
               :parallel-fork-ancestor-id="element.type === 'parallelGateway' ? element.id : parallelForkAncestorId"
               @update="handlePathUpdate(branchIndex, pathIndex, $event)"
               @delete="deletePathElement(branchIndex, pathIndex)"
+              @associations:update="$emit('associations:update', $event)"
+              @annotation:add="$emit('annotation:add', $event)"
             />
             <v-menu>
               <template v-slot:activator="{ props: menuProps }">
@@ -284,7 +286,7 @@
 <script>
 import { ref, computed, watch, inject, nextTick } from 'vue';
 import { BPMN_PALETTE_GROUPS, isGatewayType } from '../utils/bpmnPalette.js';
-import { createElement } from '../utils/diagramModel.js';
+import { createElement, findElementTreeLocation } from '../utils/diagramModel.js';
 
 export default {
   name: 'ElementEditor',
@@ -455,13 +457,23 @@ export default {
       const selfId = props.element?.id;
 
       const lanes = getLanes();
+      function walk(el, laneName, pathSuffix) {
+        if (!el?.id || el.id === selfId) return;
+        const label = (el.label && String(el.label).trim()) || getElementTypeLabel(el);
+        const title = pathSuffix ? `${label} — ${laneName} · ${pathSuffix}` : `${label} — ${laneName}`;
+        options.push({ value: el.id, title });
+        if (el.branches) {
+          el.branches.forEach((branch, idx) => {
+            const cond = branch.condition && String(branch.condition).trim();
+            const seg = cond || `ветка ${idx + 1}`;
+            const nextSuffix = pathSuffix ? `${pathSuffix} › ${seg}` : seg;
+            (branch.path || []).forEach((child) => walk(child, laneName, nextSuffix));
+          });
+        }
+      }
       lanes.forEach((lane) => {
         const laneName = lane?.name || lane?.id || 'Дорожка';
-        (lane.elements || []).forEach((el) => {
-          if (!el?.id || el.id === selfId) return;
-          const label = (el.label && String(el.label).trim()) || getElementTypeLabel(el);
-          options.push({ value: el.id, title: `${label} — ${laneName}` });
-        });
+        (lane.elements || []).forEach((el) => walk(el, laneName, ''));
       });
 
       (d.artifacts || []).forEach((a) => {
@@ -562,26 +574,14 @@ export default {
       emitAssociationsUpdate(next);
     }
 
-    function findLaneAndIndexForElementId(elementId) {
-      const d = diagram.value;
-      if (!d?.pools?.[0]?.lanes || !elementId) return null;
-      for (const lane of d.pools[0].lanes) {
-        const idx = (lane.elements || []).findIndex((e) => e && e.id === elementId);
-        if (idx !== -1) return { lane, idx };
-      }
-      return null;
-    }
-
     function addAssociationWithNewData(type) {
       const d = diagram.value;
       const selfId = props.element?.id;
       if (!d || !selfId) return;
-      const loc = findLaneAndIndexForElementId(selfId);
+      const loc = findElementTreeLocation(d, selfId);
       if (!loc) return;
       const dataEl = createElement(type, '');
-      // Put data element right after current element in the same lane
-      loc.lane.elements = Array.isArray(loc.lane.elements) ? loc.lane.elements : [];
-      loc.lane.elements.splice(loc.idx + 1, 0, dataEl);
+      loc.container.splice(loc.index + 1, 0, dataEl);
 
       const next = [...localOutgoingAssociations.value];
       next.push({

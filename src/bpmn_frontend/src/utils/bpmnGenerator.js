@@ -11,6 +11,26 @@ import {
   TASK_LIKE_TYPES,
 } from './bpmnPalette.js';
 
+/** Не участвуют в sequence flow (только dataOutputAssociation / association в XML). */
+const BPMN_FLOW_ARTIFACT_TYPES = new Set(['dataObjectReference', 'dataStoreReference', 'textAnnotation']);
+
+function lastFlowNodeInPath(path) {
+  if (!path || path.length === 0) return null;
+  for (let k = path.length - 1; k >= 0; k--) {
+    const el = path[k];
+    if (el && !BPMN_FLOW_ARTIFACT_TYPES.has(el.type)) return el;
+  }
+  return null;
+}
+
+function nextFlowNodeIdAfterIndex(processElements, fromIndex, parentNextId) {
+  for (let j = fromIndex + 1; j < processElements.length; j++) {
+    const el = processElements[j];
+    if (el && !BPMN_FLOW_ARTIFACT_TYPES.has(el.type)) return el.id;
+  }
+  return parentNextId ?? null;
+}
+
 let elementIdCounter = 1;
 let flowIdCounter = 1;
 
@@ -55,7 +75,7 @@ export function generateBpmnXml(diagramOrProcess) {
   const elementMap = new Map();
   const endEventMap = new Map(); // Map to track end events by label for merging duplicates
   const pendingConnections = []; // Store connections that need to be made in second pass
-  const ARTIFACT_TYPES = new Set(['dataObjectReference', 'dataStoreReference', 'textAnnotation']);
+  const ARTIFACT_TYPES = BPMN_FLOW_ARTIFACT_TYPES;
 
   // Helper to add flow
   function addFlow(sourceRef, targetRef, condition = null, flowId = null) {
@@ -82,10 +102,11 @@ export function generateBpmnXml(diagramOrProcess) {
       if (!element.id) {
         element.id = generateId(element.type);
       }
-      const nextElementId =
-        i < processElements.length - 1
-          ? processElements[i + 1].id
-          : parentNextId;
+      if (ARTIFACT_TYPES.has(element.type)) {
+        continue;
+      }
+
+      const nextElementId = nextFlowNodeIdAfterIndex(processElements, i, parentNextId);
 
       let elemId = element.id;
       let isDuplicateEndEvent = false;
@@ -197,9 +218,9 @@ export function generateBpmnXml(diagramOrProcess) {
         }
       });
 
-      // Check if branch ends with end event
-      const lastPathElement = branch.path[branch.path.length - 1];
-      const branchEndsWithEndEvent = lastPathElement.type === 'endEvent';
+      // Check if branch ends with end event (игнорируем артефакты в конце path)
+      const lastPathElement = lastFlowNodeInPath(branch.path);
+      const branchEndsWithEndEvent = lastPathElement?.type === 'endEvent';
       let isDuplicateEndEventInBranch = false;
       let mergedEndEventIdInBranch = null;
 
@@ -265,7 +286,7 @@ export function generateBpmnXml(diagramOrProcess) {
               effectivePendingConnections.push({
                 sourceId: elementToConnectId,
                 targetId: mergedEndEventIdInBranch,
-                label: lastPathElement.label
+                label: lastPathElement?.label
               });
             }
           }
@@ -289,8 +310,8 @@ export function generateBpmnXml(diagramOrProcess) {
       // Check if all branches end with end events
       const allBranchesEndWithEndEvent = gatewayElement.branches?.every((branch) => {
         if (!branch.path || branch.path.length === 0) return false;
-        const lastPathElement = branch.path[branch.path.length - 1];
-        return lastPathElement.type === 'endEvent';
+        const tail = lastFlowNodeInPath(branch.path);
+        return tail?.type === 'endEvent';
       });
 
       if (allBranchesEndWithEndEvent) {
@@ -349,16 +370,23 @@ export function generateBpmnXml(diagramOrProcess) {
   const participants = [];
   const associations = Array.isArray(diagram.associations) ? diagram.associations : [];
 
-  // Collect artifacts from lanes (they are placed "near" flow elements in the same list)
+  // Объекты данных / хранилища / аннотации в корне дорожки и внутри branch.path
   const artifacts = [];
-  diagram?.pools?.forEach((pool) => {
-    pool?.lanes?.forEach((lane) => {
-      (lane.elements || []).forEach((el) => {
-        if (el && ARTIFACT_TYPES.has(el.type)) {
-          artifacts.push(el);
-        }
-      });
+  function collectArtifactsRecursive(elements) {
+    if (!elements) return;
+    elements.forEach((el) => {
+      if (!el) return;
+      if (ARTIFACT_TYPES.has(el.type)) {
+        artifacts.push(el);
+        return;
+      }
+      if (el.branches) {
+        el.branches.forEach((b) => collectArtifactsRecursive(b.path || []));
+      }
     });
+  }
+  diagram?.pools?.forEach((pool) => {
+    pool?.lanes?.forEach((lane) => collectArtifactsRecursive(lane.elements || []));
   });
 
   // Ensure ids for artifacts/associations
@@ -2731,7 +2759,7 @@ function collectGatewayBranchTailErrors(path, ctx, tailOpts = {}) {
   const mergeAfterForkInLane = Boolean(tailOpts.mergeAfterForkInLane);
 
   if (!path || path.length === 0) return [];
-  const last = path[path.length - 1];
+  const last = lastFlowNodeInPath(path);
   if (!last) return [];
   if (last.type === 'endEvent') return [];
   if (hasExplicitNextElementContinuation(last)) return [];

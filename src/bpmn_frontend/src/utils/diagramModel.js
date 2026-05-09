@@ -204,6 +204,38 @@ export class DiagramModel {
 
     return null;
   }
+
+  /**
+   * Массив (lane.elements или branch.path) и индекс элемента, включая вложенные ветки шлюзов.
+   * @returns {{ container: object[], index: number } | null}
+   */
+  static findElementTreeLocation(diagram, elementId) {
+    if (!diagram?.pools || !elementId) return null;
+    for (const pool of diagram.pools) {
+      for (const lane of pool.lanes || []) {
+        const loc = DiagramModel._findInElementArray(lane.elements, elementId);
+        if (loc) return loc;
+      }
+    }
+    return null;
+  }
+
+  static _findInElementArray(elements, elementId) {
+    if (!Array.isArray(elements)) return null;
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i];
+      if (!el) continue;
+      if (el.id === elementId) return { container: elements, index: i };
+      if (el.branches) {
+        for (const br of el.branches) {
+          const path = br.path || [];
+          const inner = DiagramModel._findInElementArray(path, elementId);
+          if (inner) return inner;
+        }
+      }
+    }
+    return null;
+  }
 }
 
 /**
@@ -272,5 +304,12 @@ export function getAllElements(diagram) {
  */
 export function findElementLocation(diagram, elementId) {
   return DiagramModel.findElementLocation(diagram, elementId);
+}
+
+/**
+ * Найти контейнер и индекс элемента в дереве дорожки (в т.ч. внутри branch.path).
+ */
+export function findElementTreeLocation(diagram, elementId) {
+  return DiagramModel.findElementTreeLocation(diagram, elementId);
 }
 
