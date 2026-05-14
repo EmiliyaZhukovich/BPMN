@@ -59,13 +59,21 @@ npm install bpmn-auto-layout@^0.4.0
 cd ../../..
 ```
 
-Запуск API (пример; уточните модуль приложения под вашу установку пакета):
+Запуск API из корня репозитория (каталог `src` должен быть в `PYTHONPATH`, иначе пакет `bpmn_assistant` не находится):
 
 ```sh
+# Linux / macOS
+PYTHONPATH=src poetry run uvicorn bpmn_assistant.app:app --reload --host 127.0.0.1 --port 8000
+```
+
+В PowerShell:
+
+```powershell
+$env:PYTHONPATH = "src"
 poetry run uvicorn bpmn_assistant.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Если приложение монтируется как `src.bpmn_assistant.app`, используйте соответствующий путь к модулю и `PYTHONPATH`, как в Docker-образе.
+В Docker-образе бэкенда используется эквивалентный путь `src.bpmn_assistant.app:app` от рабочей директории `/app`.
 
 ### Фронтенд
 
@@ -79,11 +87,13 @@ npm run dev
 
 ## Тесты
 
+Из корня, с тем же `PYTHONPATH`:
+
 ```sh
-poetry run pytest
+PYTHONPATH=src poetry run pytest
 ```
 
-(запуск из корня, при необходимости после `poetry install`.)
+В PowerShell: `$env:PYTHONPATH = "src"; poetry run pytest`.
 
 ## Лицензия и контакты
 
