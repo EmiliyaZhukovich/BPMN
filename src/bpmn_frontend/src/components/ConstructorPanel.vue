@@ -306,7 +306,7 @@
       </v-btn>
       <v-btn
         @click="exportBpmn"
-        :disabled="!validation.isValid || !hasElements || !diagramBuilt"
+        :disabled="!diagramBuilt"
         color="secondary"
         variant="outlined"
         class="export-btn"
@@ -318,7 +318,7 @@
         <template v-slot:activator="{ props }">
           <v-btn
             v-bind="props"
-            :disabled="!validation.isValid || !hasElements || !diagramBuilt"
+            :disabled="!diagramBuilt"
             color="secondary"
             variant="outlined"
             class="export-btn"
@@ -345,7 +345,7 @@ import { ref, computed, watch, onMounted, provide, defineExpose } from 'vue';
 import ElementEditor from './ElementEditor.vue';
 import { generateBpmnXml, validateDiagram } from '../utils/bpmnGenerator';
 import { importBpmnXmlToDiagram } from '../utils/bpmnXmlImporter';
-import { getTemplate, getAllTemplates } from '../utils/templates';
+import { getAllTemplates, loadTemplatePayload } from '../utils/templates';
 import {
   createEmptyDiagram,
   migrateToDiagramModel,
@@ -373,7 +373,7 @@ export default {
       default: '',
     },
   },
-  emits: ['bpmn-xml-updated', 'save-diagram', 'notify'],
+  emits: ['bpmn-xml-updated', 'save-diagram', 'notify', 'export-bpmn', 'export-png', 'export-svg'],
   setup(props, { emit }) {
     // New diagram structure with pools/lanes
     const diagram = ref(createEmptyDiagram());
@@ -771,21 +771,8 @@ export default {
     }
 
     function exportBpmn() {
-      if (!validation.value.isValid) return;
-
-      try {
-        const bpmnXml = generateBpmnXml(diagram.value);
-        const blob = new Blob([bpmnXml], { type: 'application/xml' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'diagram.bpmn';
-        a.click();
-        window.URL.revokeObjectURL(url);
-      } catch (error) {
-        console.error('Error exporting BPMN:', error);
-        alert('Error exporting BPMN file');
-      }
+      if (!diagramBuilt.value) return;
+      emit('export-bpmn');
     }
 
     function exportPng() {
@@ -796,19 +783,38 @@ export default {
       emit('export-svg');
     }
 
-    function loadTemplate(templateKey) {
-      const template = getTemplate(templateKey);
-      if (template) {
-        // Check if template is diagram (new format) or process (legacy format)
-        if (template.pools && template.pools.length > 0) {
-          diagram.value = template;
-        } else {
-          diagram.value = migrateToDiagramModel(template);
+    async function loadTemplate(templateKey) {
+      const payload = loadTemplatePayload(templateKey);
+      if (!payload) return;
+
+      if (payload.type === 'bpmnXml') {
+        const result = await importBpmnXmlToDiagram(payload.xml);
+        if (result.error) {
+          emit('notify', { text: result.error, color: 'error' });
+          return;
+        }
+        diagram.value = result.diagram;
+        if (result.warnings?.length) {
+          emit('notify', {
+            text: result.warnings.slice(0, 5).join(' '),
+            color: 'warning',
+          });
         }
         diagramBuilt.value = false;
         saveToHistory();
         emit('bpmn-xml-updated', '');
+        return;
       }
+
+      const template = payload.diagram;
+      if (template.pools && template.pools.length > 0) {
+        diagram.value = template;
+      } else {
+        diagram.value = migrateToDiagramModel(template);
+      }
+      diagramBuilt.value = false;
+      saveToHistory();
+      emit('bpmn-xml-updated', '');
     }
 
     function addElementAfter(poolIndex, laneIndex, elementIndex, typeOrItem) {

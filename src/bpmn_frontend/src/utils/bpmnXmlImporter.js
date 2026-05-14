@@ -1,11 +1,18 @@
 /**
  * Импорт BPMN 2.0 XML в модель конструктора (пулы, дорожки, дерево элементов).
- * Поддерживаются типичные блок-схемы: последовательность, XOR/OR/AND с явной точкой слияния.
+ * Поддерживаются типичные блок-схемы: последовательность, XOR/OR/AND с явной точкой слияния;
+ * параллельный шлюз без join (ветви до разных конечных событий) — как несколько независимых потоков.
  */
 
 import BpmnModdle from 'bpmn-moddle';
-import { createElement, createEmptyDiagram, createLane, createAssociation } from './diagramModel.js';
-import { isGatewayType, isParallelGatewayType } from './bpmnPalette.js';
+import {
+  createElement,
+  createEmptyDiagram,
+  createLane,
+  createAssociation,
+  createArtifact,
+} from './diagramModel.js';
+import { isGatewayType } from './bpmnPalette.js';
 
 function getLaneSetArray(process) {
   const ls = process.laneSets;
@@ -17,6 +24,13 @@ function getLaneSetArray(process) {
 
 function flattenBpmnLanes(process) {
   return getLaneSetArray(process).flatMap((lset) => (Array.isArray(lset?.lanes) ? lset.lanes : []));
+}
+
+/** bpmn-moddle кладёт TextAnnotation и Association в process.artifacts, а не только в flowElements. */
+function allProcessDiagramElements(process) {
+  const fe = process.flowElements || [];
+  const art = process.artifacts || [];
+  return [...fe, ...art];
 }
 
 function buildNodeIdToLaneIdMap(bpmnLanes) {
@@ -229,6 +243,142 @@ function getOuts(outMap, id) {
   return outMap.get(id) || [];
 }
 
+/**
+ * В BPMN у шлюза порядок ссылок outgoing задаёт порядок ветвей (как в bpmn-js).
+ * outMap наполняется в порядке объявления sequenceFlow в файле — он может быть обратным; выравниваем.
+ */
+function orderOutsLikeBpmnFlowNode(fe, outs) {
+  if (!outs || outs.length < 2 || !fe) return outs;
+  const raw = fe.outgoing;
+  if (!raw) return outs;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const flowIds = [];
+  for (const ref of list) {
+    const fid = refId(ref);
+    if (fid) flowIds.push(fid);
+  }
+  if (flowIds.length < 2) return outs;
+  const byFlowId = new Map();
+  for (const o of outs) {
+    const id = o.flow?.id;
+    if (id) byFlowId.set(id, o);
+  }
+  const seen = new Set();
+  const ordered = [];
+  for (const fid of flowIds) {
+    const o = byFlowId.get(fid);
+    if (o) {
+      ordered.push(o);
+      seen.add(fid);
+    }
+  }
+  for (const o of outs) {
+    const id = o.flow?.id;
+    if (id && !seen.has(id)) ordered.push(o);
+  }
+  return ordered.length === outs.length ? ordered : outs;
+}
+
+/** Центр Y фигуры по BPMN DI (для порядка ветвей параллельного шлюза). */
+function collectShapeCenterYFromDefinitions(definitionsRoot) {
+  const map = new Map();
+  const diagrams = definitionsRoot?.diagrams;
+  if (!Array.isArray(diagrams)) return map;
+  for (const dg of diagrams) {
+    const plane = dg.plane;
+    if (!plane) continue;
+    const els = plane.planeElement;
+    if (!Array.isArray(els)) continue;
+    for (const el of els) {
+      if (!el || el.$type !== 'bpmndi:BPMNShape') continue;
+      const be = refId(el.bpmnElement);
+      const b = el.bounds;
+      if (!be || !b || b.y == null || b.height == null) continue;
+      const cy = Number(b.y) + Number(b.height) / 2;
+      if (Number.isFinite(cy)) map.set(be, cy);
+    }
+  }
+  return map;
+}
+
+/**
+ * Порядок исходов параллельного шлюза по вертикали цели на диаграмме (верхняя ветка → индекс 0 в модели).
+ * Иначе порядок «outgoing» в XML и row в автолейауте расходятся (диагональ от шлюза).
+ */
+function orderParallelGatewayOutsByTargetShapeY(outs, shapeCenterYByElementId) {
+  if (!outs || outs.length < 2 || !shapeCenterYByElementId || shapeCenterYByElementId.size === 0) {
+    return outs;
+  }
+  const scored = outs.map((o) => ({
+    o,
+    cy: shapeCenterYByElementId.get(o.target),
+  }));
+  if (scored.some((s) => s.cy == null || !Number.isFinite(s.cy))) return outs;
+  scored.sort((a, b) => a.cy - b.cy || String(a.o.target).localeCompare(String(b.o.target)));
+  return scored.map((s) => s.o);
+}
+
+function walkModdleArraysForCollaboration(node, visit) {
+  if (node == null) return;
+  if (Array.isArray(node)) {
+    for (const x of node) walkModdleArraysForCollaboration(x, visit);
+    return;
+  }
+  if (typeof node === 'object' && node.$type) {
+    visit(node);
+  }
+}
+
+/** Текстовые аннотации и связи с задачами из collaboration (как экспортирует bpmn-js). */
+function extractCollaborationArtifactsAndAssociations(definitions, processId) {
+  const artifacts = [];
+  const assocs = [];
+  const seenArtId = new Set();
+  const seenAssocId = new Set();
+
+  for (const re of definitions.rootElements || []) {
+    if (re.$type !== 'bpmn:Collaboration') continue;
+    const participants = re.participants || [];
+    if (!participants.some((p) => refId(p.processRef) === processId)) continue;
+
+    const visit = (item) => {
+      if (!item || !item.$type) return;
+      if (item.$type === 'bpmn:TextAnnotation') {
+        const id = item.id;
+        if (id && seenArtId.has(id)) return;
+        const text = item.text != null ? String(item.text) : '';
+        const art = createArtifact('textAnnotation', text);
+        if (id) {
+          art.id = id;
+          seenArtId.add(id);
+        }
+        artifacts.push(art);
+        return;
+      }
+      if (item.$type === 'bpmn:Association') {
+        const id = item.id;
+        if (id && seenAssocId.has(id)) return;
+        const s = refId(item.sourceRef);
+        const t = refId(item.targetRef);
+        if (!s || !t) return;
+        const a = createAssociation(s, t, '', 'none');
+        if (id) {
+          a.id = id;
+          seenAssocId.add(id);
+        }
+        assocs.push(a);
+      }
+    };
+
+    for (const k of Object.keys(re)) {
+      if (k === '$type' || k === 'id') continue;
+      walkModdleArraysForCollaboration(re[k], visit);
+    }
+  }
+
+  return { artifacts, associations: assocs };
+}
+
 function getSingleSuccessor(outMap, id) {
   const outs = getOuts(outMap, id);
   if (outs.length !== 1) return null;
@@ -287,6 +437,24 @@ function findJoinGateway(splitId, branchTargets, flowNodeById, outMap, maxHops =
   if (!candidates.length) return null;
   candidates.sort((a, b) => a.score - b.score || a.id.localeCompare(b.id));
   return candidates[0].id;
+}
+
+/** Слияние для параллельного шлюза: общий узел в процессе или граница внешнего фрагмента (как у неявного XOR). */
+function findParallelMergePoint(splitId, branchTargets, exitBoundary, flowNodeById, outMap, maxHops = 4000) {
+  const inner = findJoinGateway(splitId, branchTargets, flowNodeById, outMap, maxHops);
+  if (inner) return inner;
+  if (!exitBoundary) return null;
+  const lens = branchTargets.map((t) => {
+    if (t === exitBoundary) return 0;
+    return shortestPathLen(t, exitBoundary, outMap, maxHops);
+  });
+  if (lens.some((l) => l == null)) return null;
+  const allReach = lens.every((l, i) => {
+    const t = branchTargets[i];
+    if (t === exitBoundary) return l === 0;
+    return l > 0;
+  });
+  return allReach ? exitBoundary : null;
 }
 
 /**
@@ -406,6 +574,8 @@ export async function importBpmnXmlToDiagram(xmlStr) {
       return { diagram: null, warnings, error: 'Не найдено начальное событие (StartEvent) или стартовый узел' };
     }
 
+    const shapeCenterYByElementId = collectShapeCenterYFromDefinitions(definitions);
+
     const associations = [];
 
     function parseSegment(entryId, exitBoundary) {
@@ -436,8 +606,38 @@ export async function importBpmnXmlToDiagram(xmlStr) {
         }
 
         if (isSplitGateway(flowNodeById, outMap, cur)) {
-          const outs = getOuts(outMap, cur);
-          const joinId = findJoinGateway(cur, outs.map((o) => o.target), flowNodeById, outMap);
+          let outs = orderOutsLikeBpmnFlowNode(fe, getOuts(outMap, cur));
+          if (fe.$type === 'bpmn:ParallelGateway') {
+            outs = orderParallelGatewayOutsByTargetShapeY(outs, shapeCenterYByElementId);
+          }
+          const branchTargets = outs.map((o) => o.target);
+          const isParFork = fe.$type === 'bpmn:ParallelGateway';
+          const joinId = isParFork
+            ? findParallelMergePoint(cur, branchTargets, exitBoundary, flowNodeById, outMap)
+            : findJoinGateway(cur, branchTargets, flowNodeById, outMap);
+
+          if (!joinId && isParFork && exitBoundary == null) {
+            const labels = defaultBranchLabels(fe, outs.length);
+            const branches = [];
+            for (let idx = 0; idx < outs.length; idx++) {
+              const sub = parseSegment(outs[idx].target, null);
+              if (!sub.ok) return sub;
+              branches.push({
+                condition: labels[idx] ?? '',
+                path: sub.seq,
+                isDefault: false,
+              });
+            }
+            const gw = createElement('parallelGateway', fe.name || '');
+            gw.id = fe.id;
+            gw.branches = branches;
+            seq.push(gw);
+            warnings.push(
+              'Параллельный шлюз без общей точки слияния (ветви завершаются разными конечными событиями) — импортирован как несколько независимых потоков.',
+            );
+            return { ok: true, seq };
+          }
+
           if (!joinId) {
             return {
               ok: false,
@@ -583,12 +783,13 @@ export async function importBpmnXmlToDiagram(xmlStr) {
 
     const assocKey = (a) => `${a.sourceRef}\0${a.targetRef}`;
     const seenAssoc = new Set(associations.map(assocKey));
-    for (const fe of process.flowElements || []) {
+    for (const fe of allProcessDiagramElements(process)) {
       if (fe.$type === 'bpmn:Association') {
         const s = refId(fe.sourceRef);
         const t = refId(fe.targetRef);
         if (s && t) {
           const a = createAssociation(s, t, '', 'none');
+          if (fe.id) a.id = fe.id;
           const k = assocKey(a);
           if (!seenAssoc.has(k)) {
             seenAssoc.add(k);
@@ -597,6 +798,35 @@ export async function importBpmnXmlToDiagram(xmlStr) {
         }
       }
     }
+
+    const seenArtId = new Set((diagram.artifacts || []).map((a) => a?.id).filter(Boolean));
+    for (const fe of allProcessDiagramElements(process)) {
+      if (fe.$type !== 'bpmn:TextAnnotation') continue;
+      const id = fe.id;
+      if (id && seenArtId.has(id)) continue;
+      const text = fe.text != null ? String(fe.text) : '';
+      const art = createArtifact('textAnnotation', text);
+      if (id) {
+        art.id = id;
+        seenArtId.add(id);
+      }
+      diagram.artifacts.push(art);
+    }
+
+    const collab = extractCollaborationArtifactsAndAssociations(definitions, process.id);
+    for (const art of collab.artifacts) {
+      if (art?.id && seenArtId.has(art.id)) continue;
+      if (art?.id) seenArtId.add(art.id);
+      diagram.artifacts.push(art);
+    }
+    for (const a of collab.associations) {
+      const k = assocKey(a);
+      if (!seenAssoc.has(k)) {
+        seenAssoc.add(k);
+        associations.push(a);
+      }
+    }
+
     diagram.associations = associations;
 
     return { diagram, warnings };

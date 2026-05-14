@@ -4,75 +4,13 @@
  */
 
 import { SIMPLE_CONDITION_DIAGRAM } from './templateSimpleCondition.js';
+import dduConditionsControlBpmnXml from './templateDduConditionsControl.xml?raw';
 
 export const templates = {
   simpleCondition: {
     name: 'Простое условие',
-    description:
-      '',
+    description: '',
     diagram: SIMPLE_CONDITION_DIAGRAM,
-  },
-
-  multipleConditions: {
-    name: 'Множественные условия',
-    description: 'Несколько условных ветвей с логикой И',
-    process: [
-      {
-        id: 'start_1',
-        type: 'startEvent',
-        label: 'Отправка заказа',
-      },
-      {
-        id: 'task_1',
-        type: 'task',
-        label: 'Проверка оплаты и наличия товара',
-      },
-      {
-        id: 'gateway_1',
-        type: 'inclusiveGateway',
-        label: '',
-        branches: [
-          {
-            condition: 'Оплата подтверждена И товар есть в наличии',
-            path: [
-              {
-                id: 'task_2',
-                type: 'task',
-                label: 'Организовать доставку',
-              },
-            ],
-            isDefault: false,
-          },
-          {
-            condition: 'Оплата подтверждена, но товар отсутствует на складе.',
-            path: [
-              {
-                id: 'task_3',
-                type: 'task',
-                label: 'Уведомить клиента',
-              },
-            ],
-            isDefault: false,
-          },
-          {
-            condition: 'Платеж не подтвержден',
-            path: [
-              {
-                id: 'task_4',
-                type: 'task',
-                label: 'Отменить заказ',
-              },
-            ],
-            isDefault: false,
-          },
-        ],
-      },
-      {
-        id: 'end_1',
-        type: 'endEvent',
-        label: 'Заказ обработан / Отменен',
-      },
-    ],
   },
 
   parallelProcesses: {
@@ -172,67 +110,19 @@ export const templates = {
     },
   },
 
-  loop: {
-    name: 'Цикл (Повторение)',
-    description: 'Процесс с циклом/повторением',
-    process: [
-      {
-        id: 'start_1',
-        type: 'startEvent',
-        label: 'Проверка качества продукции',
-      },
-      {
-        id: 'task_1',
-        type: 'task',
-        label: 'Тестирование',
-      },
-      {
-        id: 'gateway_1',
-        type: 'exclusiveGateway',
-        label: '',
-        branches: [
-          {
-            condition: 'Тест пройден',
-            path: [
-              {
-                id: 'task_2',
-                type: 'task',
-                label: 'Упаковка',
-              },
-            ],
-            isDefault: false,
-          },
-          {
-            condition: 'Тест не пройден',
-            path: [
-              {
-                id: 'task_3',
-                type: 'task',
-                label: 'Переработка',
-              },
-              {
-                id: 'task_4',
-                type: 'task',
-                label: 'Повторное тестирование',
-              },
-            ],
-            isDefault: false,
-          },
-        ],
-      },
-      {
-        id: 'end_1',
-        type: 'endEvent',
-        label: 'Товар готов к продаже',
-      },
-    ],
+  /** Импорт из BPMN XML: параллельные ветви, хранилища данных, текстовые аннотации и связи. */
+  dduConditionsArtifacts: {
+    name: 'ДДУ: контроль условий (данные и аннотации)',
+    description:
+      '',
+    bpmnXml: dduConditionsControlBpmnXml,
   },
-
 };
 
 export function getTemplate(name) {
   const t = templates[name];
   if (!t) return null;
+  if (t.bpmnXml) return null;
   const clone = (x) => JSON.parse(JSON.stringify(x));
   const pools = t.diagram?.pools;
   if (Array.isArray(pools) && pools.length > 0) {
@@ -244,10 +134,23 @@ export function getTemplate(name) {
   return null;
 }
 
+/**
+ * @returns {{ type: 'bpmnXml', xml: string } | { type: 'diagram', diagram: object } | null}
+ */
+export function loadTemplatePayload(name) {
+  const t = templates[name];
+  if (!t) return null;
+  if (t.bpmnXml) {
+    return { type: 'bpmnXml', xml: t.bpmnXml };
+  }
+  const diagram = getTemplate(name);
+  return diagram ? { type: 'diagram', diagram } : null;
+}
+
 export function getAllTemplates() {
   return Object.keys(templates).map((key) => ({
     key,
-    ...templates[key],
+    name: templates[key].name,
+    description: templates[key].description ?? '',
   }));
 }
-

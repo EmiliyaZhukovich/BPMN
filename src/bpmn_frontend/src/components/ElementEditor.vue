@@ -505,7 +505,9 @@ export default {
         }
       }
       lanes.forEach((lane) => (lane.elements || []).forEach(walk));
-      return found;
+      if (found) return found;
+      const art = (diagram.value?.artifacts || []).find((a) => a && a.id === id);
+      return art ? art.type : null;
     }
 
     function targetIsTextAnnotation(targetRef) {

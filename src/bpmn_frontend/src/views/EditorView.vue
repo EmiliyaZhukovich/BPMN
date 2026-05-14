@@ -21,6 +21,7 @@
           :editor-session-key="editorSessionKey"
           :initial-save-state="initialSaveState"
           @bpmn-xml-updated="handleBpmnXml"
+          @export-bpmn="exportBpmnXml"
           @export-png="exportPng"
           @export-svg="exportSvg"
           @save-diagram="handleSaveDiagram"
@@ -79,6 +80,10 @@ export default {
       constructorWidth: initialW,
       _resizeCleanup: null,
       _bpmnImportSeq: 0,
+      /** Дебаунс синхронизации XML с холста bpmn-js */
+      _syncBpmnXmlTimer: null,
+      /** Снять подписку commandStack.changed */
+      _detachCanvasXmlSync: null,
       panelKey: 0,
       /** Сбрасывает подпись в шапке после первого сохранения новой диаграммы */
       metaTick: 0,
@@ -134,6 +139,7 @@ export default {
     this.bpmnViewer = new BpmnModeler({
       container: '#canvas',
     });
+    this.attachCanvasXmlSync();
 
     this.$nextTick(() => {
       this.hideBpmnLogo();
@@ -143,6 +149,7 @@ export default {
     if (this.handleWindowResize) {
       window.removeEventListener('resize', this.handleWindowResize);
     }
+    this.detachCanvasXmlSync();
     if (this.bpmnViewer) {
       this.bpmnViewer.destroy();
     }
@@ -157,13 +164,14 @@ export default {
       const color = payload?.color || 'success';
       this.showSnackbar(text, color);
     },
-    handleSaveDiagram(payload) {
+    async handleSaveDiagram(payload) {
       const id = this.diagramRouteId;
       if (!id) {
         this.showSnackbar('Не удалось определить диаграмму', 'error');
         return;
       }
       try {
+        await this.flushBpmnXmlFromCanvas();
         upsertSavedDiagram({
           id,
           name: payload.title,
@@ -175,6 +183,71 @@ export default {
         this.showSnackbar('Диаграмма сохранена', 'success');
       } catch {
         this.showSnackbar('Не удалось сохранить (лимит хранилища?)', 'error');
+      }
+    },
+    attachCanvasXmlSync() {
+      this.detachCanvasXmlSync();
+      if (!this.bpmnViewer) return;
+      const eventBus = this.bpmnViewer.get('eventBus');
+      const handler = () => {
+        clearTimeout(this._syncBpmnXmlTimer);
+        this._syncBpmnXmlTimer = setTimeout(() => {
+          this._syncBpmnXmlTimer = null;
+          this.syncBpmnXmlFromCanvasQuiet();
+        }, 350);
+      };
+      eventBus.on('commandStack.changed', handler);
+      this._detachCanvasXmlSync = () => {
+        clearTimeout(this._syncBpmnXmlTimer);
+        this._syncBpmnXmlTimer = null;
+        eventBus.off('commandStack.changed', handler);
+        this._detachCanvasXmlSync = null;
+      };
+    },
+    detachCanvasXmlSync() {
+      if (typeof this._detachCanvasXmlSync === 'function') {
+        this._detachCanvasXmlSync();
+      }
+    },
+    async syncBpmnXmlFromCanvasQuiet() {
+      if (!this.bpmnViewer) return;
+      try {
+        const { xml } = await this.bpmnViewer.saveXML({ format: true });
+        if (xml && typeof xml === 'string') {
+          this.bpmnXml = xml;
+        }
+      } catch (e) {
+        console.warn('Не удалось синхронизировать BPMN XML с холста:', e);
+      }
+    },
+    async flushBpmnXmlFromCanvas() {
+      clearTimeout(this._syncBpmnXmlTimer);
+      this._syncBpmnXmlTimer = null;
+      await this.syncBpmnXmlFromCanvasQuiet();
+    },
+    async exportBpmnXml() {
+      if (!this.bpmnViewer) {
+        this.showSnackbar('Редактор диаграммы не готов', 'error');
+        return;
+      }
+      try {
+        await this.flushBpmnXmlFromCanvas();
+        const xml = this.bpmnXml;
+        if (!xml || !xml.trim()) {
+          this.showSnackbar('Нет данных диаграммы для экспорта', 'error');
+          return;
+        }
+        const blob = new Blob([xml], { type: 'application/xml' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'diagram.bpmn';
+        a.click();
+        window.URL.revokeObjectURL(url);
+        this.showSnackbar('BPMN экспортирован из текущей диаграммы', 'success');
+      } catch (error) {
+        console.error('Error exporting BPMN from canvas:', error);
+        this.showSnackbar(error.message || 'Ошибка экспорта BPMN', 'error');
       }
     },
     clampConstructorWidth() {
@@ -295,7 +368,7 @@ export default {
       }
     },
     async exportPng() {
-      if (!this.bpmnViewer || !this.bpmnXml) {
+      if (!this.bpmnViewer) {
         this.showSnackbar('Сначала постройте диаграмму', 'error');
         return;
       }
@@ -330,7 +403,7 @@ export default {
       }
     },
     async exportSvg() {
-      if (!this.bpmnViewer || !this.bpmnXml) {
+      if (!this.bpmnViewer) {
         this.showSnackbar('Сначала постройте диаграмму', 'error');
         return;
       }

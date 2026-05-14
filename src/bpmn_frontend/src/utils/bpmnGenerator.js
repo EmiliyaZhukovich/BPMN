@@ -345,19 +345,32 @@ export function generateBpmnXml(diagramOrProcess) {
   }
 
   function handleParallelGateway(gatewayElement, gateway, nextElementId, elementsList) {
-    const joinGatewayId = `${gateway.id}-join`;
-    const joinGateway = {
-      id: joinGatewayId,
-      type: 'parallelGateway',
-      label: null,
-      incoming: [],
-      outgoing: [],
-    };
+    const branches = gatewayElement.branches;
+    const allBranchesEndWithEndEvent = Boolean(
+      branches?.length &&
+        branches.every((branch) => {
+          if (!branch.path || branch.path.length === 0) return false;
+          return lastFlowNodeInPath(branch.path)?.type === 'endEvent';
+        }),
+    );
 
-    elementsList.push(joinGateway);
-    elementMap.set(joinGatewayId, joinGateway);
+    const useJoin = !(allBranchesEndWithEndEvent && !nextElementId);
 
-    gatewayElement.branches?.forEach((branch) => {
+    const joinGatewayId = useJoin ? `${gateway.id}-join` : null;
+    let joinGateway = null;
+    if (useJoin) {
+      joinGateway = {
+        id: joinGatewayId,
+        type: 'parallelGateway',
+        label: null,
+        incoming: [],
+        outgoing: [],
+      };
+      elementsList.push(joinGateway);
+      elementMap.set(joinGatewayId, joinGateway);
+    }
+
+    branches?.forEach((branch) => {
       if (!branch.path || branch.path.length === 0) {
         throw new Error('Parallel gateway cannot have empty branches');
       }
@@ -369,17 +382,17 @@ export function generateBpmnXml(diagramOrProcess) {
         }
       });
 
-      const branchElements = transformProcess(branch.path, joinGatewayId);
+      const branchTargetId = useJoin ? joinGatewayId : null;
+      const branchElements = transformProcess(branch.path, branchTargetId);
       elementsList.push(...branchElements);
 
       if (branchElements.length > 0) {
         const firstElement = branchElements[0];
         addFlow(gateway.id, firstElement.id);
-        // Last element → join is already connected by transformProcess(..., joinGatewayId)
       }
     });
 
-    if (nextElementId) {
+    if (joinGatewayId && nextElementId) {
       addFlow(joinGatewayId, nextElementId);
     }
   }
@@ -407,6 +420,14 @@ export function generateBpmnXml(diagramOrProcess) {
   diagram?.pools?.forEach((pool) => {
     pool?.lanes?.forEach((lane) => collectArtifactsRecursive(lane.elements || []));
   });
+
+  const seenArtifactIds = new Set(artifacts.map((a) => a && a.id).filter(Boolean));
+  for (const a of diagram.artifacts || []) {
+    if (!a?.id || !a.type || !ARTIFACT_TYPES.has(a.type)) continue;
+    if (seenArtifactIds.has(a.id)) continue;
+    seenArtifactIds.add(a.id);
+    artifacts.push(a);
+  }
 
   // Ensure ids for artifacts/associations
   artifacts.forEach((a) => {
@@ -780,6 +801,47 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     xml += `/>\n`;
   });
 
+  // Текстовые аннотации и связи «задача → аннотация» — в collaboration (как экспортирует bpmn-js)
+  processes.forEach((processInfo) => {
+    const collabTypeById = new Map();
+    processInfo.elements.forEach((el) => {
+      if (el?.id && el.type) collabTypeById.set(el.id, el.type);
+    });
+    (processInfo.artifacts || []).forEach((a) => {
+      if (a?.id && a.type) collabTypeById.set(a.id, a.type);
+    });
+
+    (processInfo.artifacts || []).forEach((a) => {
+      if (a?.type !== 'textAnnotation' || !a?.id) return;
+      xml += `    <textAnnotation id="${a.id}">\n`;
+      const text = a.label != null ? escapeXml(String(a.label)) : '';
+      xml += `      <text>${text}</text>\n`;
+      xml += `    </textAnnotation>\n`;
+    });
+
+    (processInfo.associations || []).forEach((a) => {
+      if (!a?.sourceRef || !a.targetRef) return;
+      const st = collabTypeById.get(a.sourceRef);
+      const tt = collabTypeById.get(a.targetRef);
+      const involvesText = st === 'textAnnotation' || tt === 'textAnnotation';
+      const involvesData =
+        st === 'dataObjectReference' || st === 'dataStoreReference' ||
+        tt === 'dataObjectReference' || tt === 'dataStoreReference';
+      if (!involvesText || involvesData) return;
+      let sourceRef = a.sourceRef;
+      let targetRef = a.targetRef;
+      if (st === 'textAnnotation' && tt !== 'textAnnotation') {
+        sourceRef = a.targetRef;
+        targetRef = a.sourceRef;
+      }
+      const assocId =
+        a.id != null && String(a.id).trim() !== '' ? String(a.id) : `Association_${sourceRef}_${targetRef}`;
+      const dirAttr = 'None';
+      const name = a.label != null && String(a.label).trim() !== '' ? ` name="${escapeXml(String(a.label))}"` : '';
+      xml += `    <association id="${escapeXml(assocId)}" sourceRef="${sourceRef}" targetRef="${targetRef}" associationDirection="${dirAttr}"${name}/>\n`;
+    });
+  });
+
   xml += `  </collaboration>\n`;
 
   /** Уникальный id элемента &lt;dataOutputAssociation&gt; в XML (слабые ссылки на объекты из diagram.associations). */
@@ -878,10 +940,6 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     (processInfo.artifacts || []).forEach((a) => {
       if (!a?.id || !a.type) return;
       if (a.type === 'textAnnotation') {
-        xml += `    <textAnnotation id="${a.id}">\n`;
-        const text = a.label != null ? escapeXml(String(a.label)) : '';
-        xml += `      <text>${text}</text>\n`;
-        xml += `    </textAnnotation>\n`;
         return;
       }
       if (a.type === 'dataObjectReference') {
@@ -925,6 +983,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
 
       // Data associations are emitted as dataInputAssociation/dataOutputAssociation inside the flow node.
       if (involvesData) return;
+      if (involvesTextAnnotation) return;
 
       const dirAttr = 'None';
       const name = a.label != null && String(a.label).trim() !== '' ? ` name="${escapeXml(String(a.label))}"` : '';
@@ -1941,6 +2000,8 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
   const BELOW_ROW_GAP = 14;
   const BELOW_FIRST_CENTER_X_BIAS = 14;
   const BELOW_ROW_Y_OFFSET = 34;
+  /** Подпись start/intermediate часто рисуется под фигурой — опускаем data store ниже, чтобы не перекрывать текст. */
+  const BELOW_START_EVENT_LABEL_CLEARANCE = 52;
 
   const ANN_ROW_GAP = 12;
   const ANN_FIRST_LEFT_INSET = 14;
@@ -1952,6 +2013,7 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
     const anchorId = links.length ? links[0].otherId : null;
     const anchorPos = anchorId ? elementPositionMap.get(anchorId) : null;
     const anchorSize = anchorId ? (elementSizeMap.get(anchorId) || { w: 36, h: 36 }) : { w: 36, h: 36 };
+    const anchorNodeType = anchorId ? elementTypeById.get(anchorId) : null;
 
     function sizeForTextAnnotation(text) {
       const raw = text != null ? String(text) : '';
@@ -1995,7 +2057,11 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
           leftEdge = anchorPos.x + BELOW_FIRST_CENTER_X_BIAS - size.w / 2;
         }
         x = leftEdge + size.w / 2;
-        y = anchorPos.y + anchorSize.h / 2 + size.h / 2 + BELOW_ROW_Y_OFFSET;
+        let belowY = BELOW_ROW_Y_OFFSET;
+        if (anchorNodeType === 'startEvent') {
+          belowY += BELOW_START_EVENT_LABEL_CLEARANCE;
+        }
+        y = anchorPos.y + anchorSize.h / 2 + size.h / 2 + belowY;
         artifactBelowNextLeft.set(aid, leftEdge + size.w + BELOW_ROW_GAP);
       }
     }
@@ -2084,35 +2150,23 @@ function buildCollaborationXml(processes, participants, messageFlows, sequenceFl
       const GATEWAY_TOP_BRANCH_UP = 52;
 
       let waypoints;
-      const srcRightGw = src.x + srcSize.w / 2;
-      // Параллельный шлюз: верхняя ветка в той же дорожке — горизонталь с правого ребра (bpmn-io), не через верхнюю вершину.
-      if (
-        nOut === 2 &&
-        isParallelSplit &&
-        outIndex === 0 &&
-        srcLaneG &&
-        tgtLaneG &&
-        srcLaneG === tgtLaneG &&
-        tgtLeft >= srcRightGw - 2
-      ) {
-        waypoints = [
-          { x: srcRightGw, y: src.y },
-          { x: tgtLeft, y: tgt.y },
-        ];
-      } else if (
-        nOut === 2 &&
-        isParallelSplit &&
-        outIndex === 1 &&
-        srcLaneG &&
-        tgtLaneG &&
-        srcLaneG !== tgtLaneG
-      ) {
-        const exitYBottom = src.y + srcSize.h / 2;
-        waypoints = [
-          { x: src.x, y: exitYBottom },
-          { x: src.x, y: tgt.y },
-          { x: tgtLeft, y: tgt.y },
-        ];
+      // Параллельный шлюз, две ветки: ортогонально с верхней/нижней вершины ромба (не диагональ с правого ребра).
+      if (nOut === 2 && isParallelSplit && srcLaneG && tgtLaneG) {
+        if (outIndex === 0) {
+          const exitYTop = src.y - srcSize.h / 2;
+          waypoints = [
+            { x: src.x, y: exitYTop },
+            { x: src.x, y: tgt.y },
+            { x: tgtLeft, y: tgt.y },
+          ];
+        } else {
+          const exitYBottom = src.y + srcSize.h / 2;
+          waypoints = [
+            { x: src.x, y: exitYBottom },
+            { x: src.x, y: tgt.y },
+            { x: tgtLeft, y: tgt.y },
+          ];
+        }
       } else if (nOut === 2) {
         const exitYTop = src.y - srcSize.h / 2;
         const exitYBottom = src.y + srcSize.h / 2;
