@@ -1,7 +1,7 @@
 /**
  * Импорт BPMN 2.0 XML в модель конструктора (пулы, дорожки, дерево элементов).
- * Поддерживаются типичные блок-схемы: последовательность, XOR/OR/AND с явной точкой слияния;
- * параллельный шлюз без join (ветви до разных конечных событий) — как несколько независимых потоков.
+ * Поддерживаются типичные блок-схемы: последовательность, шлюзы с явной точкой слияния;
+ * разветвление без join (ветви до разных конечных событий) — как независимые ветки в одном шлюзе.
  */
 
 import BpmnModdle from 'bpmn-moddle';
@@ -78,20 +78,77 @@ function collectDataOutputAssociationsFromActivity(fe, seq, flowNodeById, warnin
   }
 }
 
-function applyBranchLaneHints(elements, nodeIdToLaneId, primaryLaneId) {
+function flowNodesInPath(path) {
+  return (path || []).filter((n) => n && !ARTIFACT_TYPES.has(n.type));
+}
+
+/**
+ * Ветка шлюза, переходящая в другую дорожку: префикс остаётся в path, хвост — в elements целевой дорожки,
+ * связь через nextElementId (как в конструкторе и при экспорте BPMN).
+ */
+function splitBranchPathAtLaneBoundary(branch, gatewayLaneId, pool, nodeIdToLaneId) {
+  const path = branch.path || [];
+  if (!path.length) return;
+
+  let runLane = branch.laneId || gatewayLaneId;
+  const flowNodes = flowNodesInPath(path);
+  if (flowNodes.length) {
+    const firstLane = nodeIdToLaneId.get(flowNodes[0].id);
+    if (firstLane && gatewayLaneId && firstLane !== gatewayLaneId && !branch.laneId) {
+      branch.laneId = firstLane;
+      runLane = firstLane;
+    }
+  }
+
+  let splitIdx = -1;
+  for (let i = 0; i < path.length; i++) {
+    const node = path[i];
+    if (ARTIFACT_TYPES.has(node.type)) continue;
+    const nodeLane = nodeIdToLaneId.get(node.id);
+    if (!nodeLane) continue;
+    if (nodeLane !== runLane) {
+      splitIdx = i;
+      break;
+    }
+  }
+
+  if (splitIdx < 0) return;
+
+  const prefix = path.slice(0, splitIdx);
+  const suffix = path.slice(splitIdx);
+  branch.path = prefix;
+
+  const prefixFlow = flowNodesInPath(prefix);
+  const suffixFlow = flowNodesInPath(suffix);
+  if (prefixFlow.length && suffixFlow.length) {
+    const last = prefixFlow[prefixFlow.length - 1];
+    last.nextElementId = suffixFlow[0].id;
+  }
+
+  const targetLaneId = nodeIdToLaneId.get(suffixFlow[0]?.id);
+  if (!targetLaneId) return;
+
+  const targetLane = pool.lanes.find((l) => l.id === targetLaneId);
+  if (!targetLane) return;
+  if (!targetLane.elements) targetLane.elements = [];
+  targetLane.elements.push(...suffix);
+  distributeCrossLaneInElementList(targetLane.elements, targetLaneId, pool, nodeIdToLaneId);
+}
+
+function distributeCrossLaneBranchPaths(pool, nodeIdToLaneId) {
+  if (!pool?.lanes?.length) return;
+  for (const lane of pool.lanes) {
+    distributeCrossLaneInElementList(lane.elements || [], lane.id, pool, nodeIdToLaneId);
+  }
+}
+
+function distributeCrossLaneInElementList(elements, currentLaneId, pool, nodeIdToLaneId) {
   if (!Array.isArray(elements)) return;
   for (const el of elements) {
     if (!el?.branches) continue;
-    for (const br of el.branches) {
-      const path = br.path || [];
-      const firstFlow = path.find((n) => n && !ARTIFACT_TYPES.has(n.type));
-      if (firstFlow) {
-        const lid = nodeIdToLaneId.get(firstFlow.id);
-        if (lid && primaryLaneId && lid !== primaryLaneId) {
-          br.laneId = lid;
-        }
-      }
-      applyBranchLaneHints(path, nodeIdToLaneId, primaryLaneId);
+    for (const branch of el.branches) {
+      splitBranchPathAtLaneBoundary(branch, currentLaneId, pool, nodeIdToLaneId);
+      distributeCrossLaneInElementList(branch.path || [], currentLaneId, pool, nodeIdToLaneId);
     }
   }
 }
@@ -545,6 +602,38 @@ function makeGatewayShell(fe, outs, joinId, flowNodeById, outMap, inDegree, warn
   return { ok: true, gateway: gw };
 }
 
+/** Шлюз-разветвитель без общей точки слияния: каждая исходящая ветка парсится до своего конца. */
+function importSplitGatewayWithoutJoin(fe, outs, parseSegment) {
+  const localType = mapFlowElementType(fe.$type);
+  if (!localType) {
+    return { ok: false, error: `Тип шлюза «${fe.$type}» не поддерживается при импорте` };
+  }
+  const isPar = fe.$type === 'bpmn:ParallelGateway';
+  const defaultFlowId = fe.default ? refId(fe.default) : null;
+  const labels = defaultBranchLabels(fe, outs.length);
+  const branches = [];
+  for (let idx = 0; idx < outs.length; idx++) {
+    const o = outs[idx];
+    const sub = parseSegment(o.target, null);
+    if (!sub.ok) return sub;
+    let condition = flowConditionLabel(o.flow);
+    if (!condition && !isPar) condition = labels[idx] || `Ветвь ${idx + 1}`;
+    const isDefault = Boolean(defaultFlowId && o.flow.id === defaultFlowId);
+    branches.push({ condition, path: sub.seq, isDefault });
+  }
+  const gw = createElement(localType, fe.name || '');
+  gw.id = fe.id;
+  gw.branches = branches;
+  return { ok: true, gateway: gw };
+}
+
+function warningForGatewayWithoutJoin(fe) {
+  if (fe.$type === 'bpmn:ParallelGateway') {
+    return 'Параллельный шлюз без общей точки слияния (ветви завершаются разными конечными событиями) — импортирован как несколько независимых потоков.';
+  }
+  return 'Шлюз без общей точки слияния (ветви завершаются разными конечными событиями) — импортирован с независимыми ветками.';
+}
+
 /**
  * @param {string} xmlStr
  * @returns {Promise<{ diagram: object, warnings: string[], error?: string }>}
@@ -614,27 +703,15 @@ export async function importBpmnXmlToDiagram(xmlStr) {
           const isParFork = fe.$type === 'bpmn:ParallelGateway';
           const joinId = isParFork
             ? findParallelMergePoint(cur, branchTargets, exitBoundary, flowNodeById, outMap)
-            : findJoinGateway(cur, branchTargets, flowNodeById, outMap);
+            : exitBoundary != null
+              ? resolveImplicitSplitJoin(cur, branchTargets, exitBoundary, flowNodeById, outMap)
+              : findJoinGateway(cur, branchTargets, flowNodeById, outMap);
 
-          if (!joinId && isParFork && exitBoundary == null) {
-            const labels = defaultBranchLabels(fe, outs.length);
-            const branches = [];
-            for (let idx = 0; idx < outs.length; idx++) {
-              const sub = parseSegment(outs[idx].target, null);
-              if (!sub.ok) return sub;
-              branches.push({
-                condition: labels[idx] ?? '',
-                path: sub.seq,
-                isDefault: false,
-              });
-            }
-            const gw = createElement('parallelGateway', fe.name || '');
-            gw.id = fe.id;
-            gw.branches = branches;
-            seq.push(gw);
-            warnings.push(
-              'Параллельный шлюз без общей точки слияния (ветви завершаются разными конечными событиями) — импортирован как несколько независимых потоков.',
-            );
+          if (!joinId && exitBoundary == null) {
+            const terminal = importSplitGatewayWithoutJoin(fe, outs, parseSegment);
+            if (!terminal.ok) return terminal;
+            seq.push(terminal.gateway);
+            warnings.push(warningForGatewayWithoutJoin(fe));
             return { ok: true, seq };
           }
 
@@ -759,7 +836,7 @@ export async function importBpmnXmlToDiagram(xmlStr) {
     if (bpmnLanes.length === 0) {
       pool.lanes = [createLane('Дорожка 1')];
       pool.lanes[0].elements = top;
-      applyBranchLaneHints(top, nodeIdToLaneId, primaryLaneBpmnId || pool.lanes[0].id);
+      distributeCrossLaneBranchPaths(pool, nodeIdToLaneId);
     } else {
       pool.lanes = bpmnLanes.map((bl) => {
         const lane = createLane(bl.name != null ? String(bl.name) : 'Дорожка');
@@ -772,7 +849,7 @@ export async function importBpmnXmlToDiagram(xmlStr) {
       for (const lane of pool.lanes) {
         lane.elements = lane.id === primaryId ? top : [];
       }
-      applyBranchLaneHints(top, nodeIdToLaneId, primaryId);
+      distributeCrossLaneBranchPaths(pool, nodeIdToLaneId);
 
       const pIdx = pool.lanes.findIndex((l) => l.id === primaryId);
       if (pIdx > 0) {
